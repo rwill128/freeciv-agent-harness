@@ -286,7 +286,7 @@ class ManagedAgent:
             "center_map": view["center_map"],
             "radius": view["radius"],
             "topology_id": self.state.map_info.get("topology_id"),
-            "format": "freeciv-agent-ascii-view-v1",
+            "format": "freeciv-agent-ascii-view-v2",
             "text": text,
         }
 
@@ -688,10 +688,7 @@ class ManagedAgent:
     ) -> str:
         radius = int(view["radius"])
         center_map = view["center_map"]
-        tiles_by_delta = {
-            (int(tile["dx"]), int(tile["dy"])): tile
-            for tile in view["tiles"]
-        }
+        tiles_by_delta = self._tiles_by_delta(view["tiles"])
         selector = "tile"
         selector_id = view["center_tile"]
         if unit_id is not None:
@@ -705,14 +702,14 @@ class ManagedAgent:
             selector_id = tile_id
 
         lines = [
-            "freeciv-agent-ascii-view-v1",
+            "freeciv-agent-ascii-view-v2",
             (
                 f"player={self.name} turn={view['turn']} year={view['year']} "
                 f"center={selector}:{selector_id} tile={view['center_tile']} "
                 f"map=({center_map['x']},{center_map['y']}) radius={radius} "
                 f"topology_id={self.state.map_info.get('topology_id')}"
             ),
-            "cell=terrain+marker; rows=dy relative to center; columns=dx relative to center",
+            "cell=terrain+marker; dx/dy are relative to center",
             (
                 "terrain: ? unknown, ~=water, a=arctic, d=desert, f=forest, "
                 "g=grassland, h=hills, j=jungle, m=mountains, p=plains, "
@@ -722,22 +719,110 @@ class ManagedAgent:
                 "marker: .=none, uppercase=own unit, lowercase=other unit, "
                 "@=own city, &=other city, *=multiple visible entities"
             ),
-            "",
-            "      " + " ".join(f"{dx:+2d}" for dx in range(-radius, radius + 1)),
         ]
 
-        for dy in range(-radius, radius + 1):
-            row = [f"{dy:+3d} "]
-            for dx in range(-radius, radius + 1):
-                tile = tiles_by_delta.get((dx, dy))
-                row.append(self._ascii_cell(tile))
-            lines.append(" ".join(row))
+        topology_id = self.state.map_info.get("topology_id", 0)
+        if bool(topology_id & 1) and bool(topology_id & 2):
+            render_tiles = self._render_iso_hex_ascii_grid(lines, tiles_by_delta, radius)
+        else:
+            render_tiles = self._render_square_ascii_grid(lines, tiles_by_delta, radius)
 
-        notable_lines = self._ascii_notable_lines(view["tiles"])
+        notable_lines = self._ascii_notable_lines(render_tiles)
         if notable_lines:
             lines.extend(["", "details:"])
             lines.extend(notable_lines)
         return "\n".join(lines)
+
+    @staticmethod
+    def _tiles_by_delta(tiles: list[dict[str, Any]]) -> dict[tuple[int, int], dict[str, Any]]:
+        return {
+            (int(tile["dx"]), int(tile["dy"])): tile
+            for tile in tiles
+        }
+
+    def _render_iso_hex_ascii_grid(
+        self,
+        lines: list[str],
+        tiles_by_delta: dict[tuple[int, int], dict[str, Any]],
+        radius: int,
+    ) -> list[dict[str, Any]]:
+        lines.extend(
+            [
+                (
+                    "layout=iso-hex; hex_distance=(abs(dx)+abs(dy)+"
+                    "abs(dx-dy))/2; omitted cells are outside hex radius"
+                ),
+                (
+                    "valid neighbor directions: 0 northwest(-1,-1), "
+                    "1 north(+0,-1), 3 west(-1,+0), 4 east(+1,+0), "
+                    "6 south(+0,+1), 7 southeast(+1,+1)"
+                ),
+                "",
+                "center-neighbors:",
+            ]
+        )
+        neighbor_specs = [
+            ("northwest", -1, -1),
+            ("north", 0, -1),
+            ("west", -1, 0),
+            ("center", 0, 0),
+            ("east", 1, 0),
+            ("south", 0, 1),
+            ("southeast", 1, 1),
+        ]
+        for name, dx, dy in neighbor_specs:
+            tile = tiles_by_delta.get((dx, dy))
+            lines.append(
+                f"  {name:<9} dx={dx:+d} dy={dy:+d} {self._ascii_cell(tile)} "
+                f"tile={tile.get('tile') if tile else 'outside'}"
+            )
+
+        lines.extend(["", "hex-grid:"])
+        render_tiles = []
+        for dy in range(-radius, radius + 1):
+            row_tiles = []
+            for dx in range(-radius, radius + 1):
+                if self._iso_hex_distance(dx, dy) <= radius:
+                    tile = tiles_by_delta.get((dx, dy))
+                    row_tiles.append((dx, tile))
+                    if tile is not None:
+                        render_tiles.append(tile)
+            if not row_tiles:
+                continue
+            min_dx = row_tiles[0][0]
+            max_dx = row_tiles[-1][0]
+            indent = " " * ((min_dx + radius) * 2)
+            cells = "  ".join(self._ascii_cell(tile) for _dx, tile in row_tiles)
+            lines.append(f"dy={dy:+d} dx={min_dx:+d}..{max_dx:+d} {indent}{cells}")
+        return render_tiles
+
+    def _render_square_ascii_grid(
+        self,
+        lines: list[str],
+        tiles_by_delta: dict[tuple[int, int], dict[str, Any]],
+        radius: int,
+    ) -> list[dict[str, Any]]:
+        lines.extend(
+            [
+                "layout=square-or-unknown-topology; rows=dy; columns=dx",
+                "",
+                "      " + " ".join(f"{dx:+2d}" for dx in range(-radius, radius + 1)),
+            ]
+        )
+        render_tiles = []
+        for dy in range(-radius, radius + 1):
+            row = [f"{dy:+3d} "]
+            for dx in range(-radius, radius + 1):
+                tile = tiles_by_delta.get((dx, dy))
+                if tile is not None:
+                    render_tiles.append(tile)
+                row.append(self._ascii_cell(tile))
+            lines.append(" ".join(row))
+        return render_tiles
+
+    @staticmethod
+    def _iso_hex_distance(dx: int, dy: int) -> int:
+        return (abs(dx) + abs(dy) + abs(dx - dy)) // 2
 
     def _ascii_cell(self, tile: dict[str, Any] | None) -> str:
         if tile is None or not tile.get("known"):

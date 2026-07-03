@@ -413,10 +413,10 @@ HTTP:
 GET /players/AgentB/ascii-view?unit_id=108&radius=3
 ```
 
-The JSON response includes `format=freeciv-agent-ascii-view-v1` and a `text`
+The JSON response includes `format=freeciv-agent-ascii-view-v2` and a `text`
 field. The CLI `--text` flag prints only that text field.
 
-Format v1 uses two-character cells:
+Format v2 uses two-character cells:
 
 - first character: terrain code
 - second character: visible marker
@@ -445,9 +445,27 @@ Visible markers:
 - `&` other city
 - `*` multiple visible units/cities on the tile
 
-The grid rows are `dy` offsets and columns are `dx` offsets relative to the
-center tile in the same map-coordinate system used by `local-view`. Resource,
-owner, city, and unit details are listed after the grid for notable tiles.
+For the current isometric-hex topology (`topology_id=3`), format v2 uses a
+hex-distance layout instead of a square matrix:
+
+```text
+hex_distance=(abs(dx)+abs(dy)+abs(dx-dy))/2
+```
+
+Cells outside the requested hex radius are omitted. The view also includes an
+explicit `center-neighbors` block with the six legal adjacent directions:
+
+- `0 northwest(-1,-1)`
+- `1 north(+0,-1)`
+- `3 west(-1,+0)`
+- `4 east(+1,+0)`
+- `6 south(+0,+1)`
+- `7 southeast(+1,+1)`
+
+This is deliberate: the ASCII view should not imply that square-grid positions
+such as `northeast(+1,-1)` or `southwest(-1,+1)` are adjacent on the current
+hex map. Resource, owner, city, and unit details are listed after the grid for
+notable rendered tiles.
 
 ### Valid Moves
 
