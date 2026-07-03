@@ -22,6 +22,8 @@ python3 -m freeciv_agent.control_cli brief
 python3 -m freeciv_agent.control_cli found-city AgentA --city-name Alpha
 python3 -m freeciv_agent.control_cli move-unit AgentA 105 --dx 1
 python3 -m freeciv_agent.control_cli move-unit AgentA 105 --direction 4
+python3 -m freeciv_agent.control_cli unit-activity AgentA 103 mine
+python3 -m freeciv_agent.control_cli unit-activity AgentA 103 road --target Road
 python3 -m freeciv_agent.control_cli phase-done AgentA
 ```
 
@@ -31,6 +33,9 @@ python3 -m freeciv_agent.control_cli phase-done AgentA
   one-command actions.
 - Prefer named high-level commands over raw packet sends.
 - Unit movement uses `PACKET_UNIT_ORDERS`, not `PACKET_UNIT_DO_ACTION`.
+- Worker tasks use the generic `unit-activity` command backed by
+  `PACKET_UNIT_CHANGE_ACTIVITY`; do not add separate commands for every worker
+  activity unless an LLM-facing workflow clearly needs a semantic shortcut.
 - `brief` is the preferred state read for an LLM agent turn; `state` is the
   full debugging payload.
 - `move-unit` reports observed `before`/`after` state plus `applied`, not just

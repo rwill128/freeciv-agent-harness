@@ -41,6 +41,13 @@ def main() -> None:
     move_unit.add_argument("--dy", default=0, type=int)
     move_unit.add_argument("--wait", default=1.0, type=float)
 
+    unit_activity = subparsers.add_parser("unit-activity")
+    unit_activity.add_argument("name")
+    unit_activity.add_argument("unit_id", type=int)
+    unit_activity.add_argument("activity")
+    unit_activity.add_argument("--target")
+    unit_activity.add_argument("--wait", default=1.0, type=float)
+
     query_actions = subparsers.add_parser("query-actions")
     query_actions.add_argument("name")
     query_actions.add_argument("unit_id", type=int)
@@ -87,6 +94,15 @@ def main() -> None:
         if args.direction is not None:
             body["direction"] = args.direction
         result = request("POST", f"{args.base_url}/players/{args.name}/move-unit", body)
+    elif args.command == "unit-activity":
+        body = {
+            "unit_id": args.unit_id,
+            "activity": args.activity,
+            "wait": args.wait,
+        }
+        if args.target is not None:
+            body["target"] = args.target
+        result = request("POST", f"{args.base_url}/players/{args.name}/unit-activity", body)
     elif args.command == "query-actions":
         body = {
             "unit_id": args.unit_id,

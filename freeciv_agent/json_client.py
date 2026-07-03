@@ -224,6 +224,23 @@ class FreecivJsonClient:
             }
         )
 
+    def send_unit_change_activity(
+        self,
+        *,
+        unit_id: int,
+        activity: int,
+        target: int = -1,
+    ) -> None:
+        self.send_packet(
+            {
+                "pid": 222,
+                "fields": _bitvector_bytes(3, [0, 1, 2]),
+                "unit_id": unit_id,
+                "activity": activity,
+                "target": target,
+            }
+        )
+
     def _require_socket(self) -> socket.socket:
         if self._sock is None:
             raise RuntimeError("client is not connected")

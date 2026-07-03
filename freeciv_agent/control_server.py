@@ -14,6 +14,35 @@ from urllib.parse import urlparse
 from .json_client import FreecivJsonClient
 
 
+ACTIVITY_IDS = {
+    "idle": 0,
+    "cultivate": 1,
+    "mine": 2,
+    "irrigate": 3,
+    "fortified": 4,
+    "sentry": 5,
+    "pillage": 6,
+    "goto": 7,
+    "explore": 8,
+    "transform": 9,
+    "fortify": 10,
+    "fortifying": 10,
+    "clean": 11,
+    "base": 12,
+    "road": 13,
+    "gen-road": 13,
+    "gen_road": 13,
+    "convert": 14,
+    "plant": 15,
+}
+
+DEFAULT_ACTIVITY_TARGETS = {
+    2: "Mine",
+    3: "Irrigation",
+    13: "Road",
+}
+
+
 @dataclass
 class PlayerState:
     name: str
@@ -27,6 +56,7 @@ class PlayerState:
     units: dict[int, dict[str, Any]] = field(default_factory=dict)
     cities: dict[int, dict[str, Any]] = field(default_factory=dict)
     unit_types: dict[int, dict[str, Any]] = field(default_factory=dict)
+    extras: dict[int, dict[str, Any]] = field(default_factory=dict)
     packet_counts: Counter[int | str] = field(default_factory=Counter)
     last_error: str | None = None
 
@@ -50,6 +80,7 @@ class PlayerState:
             "units": owned_units,
             "cities": owned_cities,
             "unit_types": self.unit_types,
+            "extras": self.extras,
             "packet_counts": dict(self.packet_counts.most_common(20)),
             "last_error": self.last_error,
         }
@@ -87,6 +118,10 @@ class PlayerState:
             for key in ("attack_strength", "defense_strength", "move_rate", "worker"):
                 if key in unit_type:
                     enriched[f"type_{key}"] = unit_type[key]
+        target = self.extras.get(int(unit["activity_tgt"])) if "activity_tgt" in unit else None
+        if target is not None:
+            enriched["activity_target_name"] = target.get("name")
+            enriched["activity_target_rule_name"] = target.get("rule_name")
         return enriched
 
     @staticmethod
@@ -102,6 +137,9 @@ class PlayerState:
                 "movesleft",
                 "hp",
                 "activity",
+                "activity_tgt",
+                "activity_target_name",
+                "activity_target_rule_name",
                 "done_moving",
                 "homecity",
             ],
@@ -262,6 +300,50 @@ class ManagedAgent:
             "observed_changed": bool(after and self._unit_changed(before, after)),
         }
 
+    def unit_activity(
+        self,
+        *,
+        unit_id: int,
+        activity: str | int,
+        target: str | int | None = None,
+        wait: float = 1.0,
+    ) -> dict[str, Any]:
+        with self._lock:
+            unit = self.state.units.get(unit_id)
+            if unit is None or unit.get("owner") != self.state.player_no:
+                raise RuntimeError(f"{self.name} does not own unit {unit_id}")
+            before = self.state._enrich_unit(unit)
+            activity_id = self._resolve_activity(activity)
+            target_id = self._resolve_activity_target(activity_id, target)
+
+        self.client.send_unit_change_activity(
+            unit_id=unit_id,
+            activity=activity_id,
+            target=target_id,
+        )
+
+        after = self._wait_for_unit_update(
+            unit_id=unit_id,
+            previous=before,
+            wait=wait,
+        )
+        return {
+            "ok": True,
+            "player": self.name,
+            "unit_id": unit_id,
+            "packet": "PACKET_UNIT_CHANGE_ACTIVITY",
+            "activity": activity_id,
+            "target": target_id,
+            "before": PlayerState._brief_unit(before),
+            "after": PlayerState._brief_unit(after) if after else None,
+            "applied": bool(
+                after
+                and after.get("activity") == activity_id
+                and (target_id < 0 or after.get("activity_tgt") == target_id)
+            ),
+            "observed_changed": bool(after and self._unit_changed(before, after)),
+        }
+
     def query_actions(
         self,
         *,
@@ -329,9 +411,61 @@ class ManagedAgent:
                     return enriched
                 self._state_condition.wait(remaining)
 
+    def _wait_for_unit_update(
+        self,
+        *,
+        unit_id: int,
+        previous: dict[str, Any],
+        wait: float,
+    ) -> dict[str, Any] | None:
+        deadline = time.monotonic() + wait
+        with self._state_condition:
+            while True:
+                current = self.state.units.get(unit_id)
+                enriched = self.state._enrich_unit(current) if current else None
+                if enriched and self._unit_changed(previous, enriched):
+                    return enriched
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return enriched
+                self._state_condition.wait(remaining)
+
     @staticmethod
     def _unit_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
-        return any(before.get(key) != after.get(key) for key in ("tile", "movesleft", "hp", "activity"))
+        return any(
+            before.get(key) != after.get(key)
+            for key in ("tile", "movesleft", "hp", "activity", "activity_tgt")
+        )
+
+    def _resolve_activity(self, activity: str | int) -> int:
+        if isinstance(activity, int):
+            return activity
+        text = activity.strip().lower()
+        if text.isdigit():
+            return int(text)
+        try:
+            return ACTIVITY_IDS[text]
+        except KeyError as exc:
+            raise RuntimeError(f"unknown activity {activity!r}") from exc
+
+    def _resolve_activity_target(self, activity: int, target: str | int | None) -> int:
+        if isinstance(target, int):
+            return target
+        if target is None:
+            target = DEFAULT_ACTIVITY_TARGETS.get(activity)
+        if target is None or target == "":
+            return -1
+        text = str(target).strip().lower()
+        if text.lstrip("-").isdigit():
+            return int(text)
+        for extra_id, extra in self.state.extras.items():
+            names = (
+                str(extra.get("name", "")).lower(),
+                str(extra.get("rule_name", "")).lower(),
+            )
+            if text in names:
+                return extra_id
+        raise RuntimeError(f"unknown extra target {target!r}")
 
     def _relative_tile(self, tile: int, dx: int, dy: int) -> int:
         map_x, map_y = self._index_to_map_pos(tile)
@@ -497,6 +631,26 @@ class ManagedAgent:
                     ],
                 )
                 self._state_condition.notify_all()
+            elif pid == 232 and "id" in packet:
+                extra_id = int(packet["id"])
+                self.state.extras[extra_id] = compact_packet(
+                    packet,
+                    [
+                        "id",
+                        "name",
+                        "rule_name",
+                        "category",
+                        "causes",
+                        "rmcauses",
+                        "buildable",
+                        "generated",
+                        "build_time",
+                        "build_time_factor",
+                        "removal_time",
+                        "removal_time_factor",
+                    ],
+                )
+                self._state_condition.notify_all()
             elif (
                 pid == 51
                 and packet.get("username") == self.name
@@ -518,6 +672,7 @@ class ManagedAgent:
                             "movesleft",
                             "hp",
                             "activity",
+                            "activity_tgt",
                             "done_moving",
                             "homecity",
                         ],
@@ -540,6 +695,7 @@ class ManagedAgent:
                             "type",
                             "hp",
                             "activity",
+                            "activity_tgt",
                             "transported_by",
                             "packet_use",
                             "info_city_id",
@@ -694,6 +850,16 @@ def make_handler(control: ControlState) -> type[BaseHTTPRequestHandler]:
                                 ),
                                 dx=int(body.get("dx", 0)),
                                 dy=int(body.get("dy", 0)),
+                                wait=float(body.get("wait", 1.0)),
+                            )
+                        )
+                        return
+                    if command == "unit-activity":
+                        self._send_json(
+                            agent.unit_activity(
+                                unit_id=int(body["unit_id"]),
+                                activity=body["activity"],
+                                target=body.get("target"),
                                 wait=float(body.get("wait", 1.0)),
                             )
                         )

@@ -131,6 +131,7 @@ HTTP endpoints currently implemented:
 - `POST /players/{name}/phase-done`
 - `POST /players/{name}/found-city`
 - `POST /players/{name}/move-unit`
+- `POST /players/{name}/unit-activity`
 - `POST /players/{name}/query-actions`
 - `POST /players/{name}/packet`
 
@@ -338,6 +339,67 @@ If Freeciv accepts but does not immediately apply an order, `applied` will be
 false and `after` reflects the last observed state. Agents should inspect this
 instead of assuming every sent command changed the game.
 
+### Unit Activity
+
+Worker tasks such as road, irrigate, and mine use
+`PACKET_UNIT_CHANGE_ACTIVITY` (`pid=222`) rather than a separate packet for each
+task. This is the same path used by the GUI's
+`request_new_unit_activity_targeted()`.
+
+Canonical CLI:
+
+```sh
+python3 -m freeciv_agent.control_cli unit-activity AgentA 103 mine
+python3 -m freeciv_agent.control_cli unit-activity AgentA 103 road --target Road
+python3 -m freeciv_agent.control_cli unit-activity AgentA 103 sentry
+```
+
+Working packet shape:
+
+```json
+{
+  "pid": 222,
+  "fields": [7],
+  "unit_id": 103,
+  "activity": 2,
+  "target": 1
+}
+```
+
+Relevant activity constants:
+
+- `ACTIVITY_IDLE = 0`
+- `ACTIVITY_CULTIVATE = 1`
+- `ACTIVITY_MINE = 2`
+- `ACTIVITY_IRRIGATE = 3`
+- `ACTIVITY_SENTRY = 5`
+- `ACTIVITY_FORTIFYING = 10`
+- `ACTIVITY_CLEAN = 11`
+- `ACTIVITY_BASE = 12`
+- `ACTIVITY_GEN_ROAD = 13`
+
+Freeciv activities `mine`, `irrigate`, `road`, `base`, `clean`, and `pillage`
+require a target extra. The harness decodes `PACKET_RULESET_EXTRA` (`pid=232`)
+so agents can use target names instead of raw extra ids. Defaults are currently:
+
+- `mine` -> `Mine`
+- `irrigate` -> `Irrigation`
+- `road` -> `Road`
+
+In the live turn-5 game after reconnecting the control server, the decoded
+extra table included `Mine` as id `1` and `Road` as id `14`; `Irrigation` was
+not present. The verified AgentA command was:
+
+```sh
+python3 -m freeciv_agent.control_cli unit-activity AgentA 103 mine --wait 2
+```
+
+It returned `applied: true`, with Worker `103` changing to activity `2` and
+activity target `1`.
+
+`unit-activity` returns `before`, `after`, `applied`, and `observed_changed`
+like `move-unit`.
+
 ## Verified Two-Player Test
 
 With `aifill=0`, starting `AgentA` and `AgentB`, marking them ready, and using
@@ -370,10 +432,6 @@ the GTK observer:
 
 Named commands still needed:
 
-- `fortify`
-- `road`
-- `irrigate`
-- `mine`
 - `set-city-production`
 - `set-research`
 - richer `query-actions` / action availability inspection parsing
