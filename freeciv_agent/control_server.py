@@ -1539,8 +1539,8 @@ class ManagedAgent:
                         ],
                     )
                 )
-                if "owner" not in current and self.state.player_no is not None:
-                    current["owner"] = self.state.player_no
+                if "owner" not in current:
+                    current["owner"] = 0
                 self.state.units[unit_id] = current
                 self._state_condition.notify_all()
             elif pid == 64 and "id" in packet:
@@ -1563,8 +1563,8 @@ class ManagedAgent:
                         ],
                     )
                 )
-                if "owner" not in current and self.state.player_no is not None:
-                    current["owner"] = self.state.player_no
+                if "owner" not in current:
+                    current["owner"] = 0
                 self.state.units[unit_id] = current
                 self._state_condition.notify_all()
             elif pid == 62:
@@ -1591,8 +1591,8 @@ class ManagedAgent:
                         ],
                     )
                 )
-                if "owner" not in current and self.state.player_no is not None:
-                    current["owner"] = self.state.player_no
+                if "owner" not in current:
+                    current["owner"] = 0
                 self.state.cities[city_id] = current
                 self._state_condition.notify_all()
             elif pid == 30:

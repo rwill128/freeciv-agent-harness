@@ -244,16 +244,19 @@ examples: AgentA's starting tile `429` is `(15,23)` on an `18x36` map; AgentB's
 starting tile `569` is `(11,31)`.
 
 Freeciv uses delta encoding for many JSON packets. Delta packets include a
-`fields` byte array bitvector. Important examples:
+`fields` byte array bitvector, and zero-valued fields may be omitted. Important
+examples:
 
 - Ready true first send: `{"pid":11,"fields":[3],"player_no":0}`
 - Phase done first send: `{"pid":52,"fields":[1],"turn":1}`
 - Unit action first send: `pid=84`, `fields:[31]`, and all five action fields.
 - Unit order first send for one-step movement: `pid=73`, `fields:[103]`.
 
-For player 0, fields with value zero may be omitted by delta encoding. The
-controller must treat omitted `owner` values in owned unit/city packets as the
-current player's `player_no` when reconstructing state.
+For `owner`, an omitted field means protocol value `0`, not "the current
+viewer/player." This matters once another player can see player 0's units:
+AgentB can receive a visible AgentA unit without an `owner` field. The
+controller must reconstruct that as `owner=0`, otherwise AgentB will
+misclassify AgentA units as friendly.
 
 The control server now parses `PACKET_RULESET_UNIT` into `unit_types` and
 enriches each owned unit in `/state` with `type_name`, `type_rule_name`, and
