@@ -139,6 +139,44 @@ HTTP endpoints currently implemented:
 - `POST /players/{name}/query-actions`
 - `POST /players/{name}/packet`
 
+## LLM-Facing Interface Rules
+
+The harness should not make an LLM reason from opaque Freeciv protocol IDs when
+the meaning is known. Current views preserve raw IDs for exact targeting and
+debugging, but add decoded language beside them.
+
+Rules for canonical state/action payloads:
+
+- Keep protocol fields such as `type`, `owner`, `activity`,
+  `production_kind`, `production_value`, `topology_id`, and direction IDs.
+- Add decoded fields such as `type_info`, `owner_info`, `activity_info`,
+  `production`, `terrain_info`, `resource_info`, `direction_info`, and
+  `topology`.
+- Decode bitmasks into facts. For example, `topology_id=3` is exposed as
+  `name=isometric hex`, `is_isometric=true`, `is_hex=true`, and a
+  `valid_directions` list.
+- Decode errors. Invalid movement now reports the attempted direction name,
+  the topology name, and the allowed alternatives.
+- Do not encode strategy, recommendations, or memory in these views. They are
+  factual current-state surfaces; each LLM agent is responsible for its own
+  planning and memory.
+
+Important decoded fields now available:
+
+- `map.topology`: topology name, wrap facts, valid directions, invalid
+  directions, map size, and latitude bounds.
+- `unit.owner_info`: `self`, `other`, `unowned`, or `unknown`.
+- `unit.type_info`: unit type name/rule name and known stats such as attack,
+  defense, move rate, hit points, build cost, and worker flag.
+- `unit.activity_info`: activity name and decoded target extra when present.
+- `city.production`: current build category and target. In the active S3_2
+  protocol, `production_kind=6` is `UnitType`; `production_kind=3` is
+  `Building`.
+- `tile.terrain_info`, `tile.resource_info`, and `tile.owner_info`: decoded
+  tile facts for local views and valid-move targets.
+- `move.direction_info`: direction ID, name, delta, and whether that direction
+  is legal on the current topology.
+
 ## Protocol Findings
 
 Freeciv JSON packets use the normal Freeciv packet framing:

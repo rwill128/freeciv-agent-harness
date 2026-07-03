@@ -36,6 +36,25 @@ ACTIVITY_IDS = {
     "plant": 15,
 }
 
+ACTIVITY_NAMES = {
+    0: "Idle",
+    1: "Cultivate",
+    2: "Mine",
+    3: "Irrigate",
+    4: "Fortified",
+    5: "Sentry",
+    6: "Pillage",
+    7: "Goto",
+    8: "Explore",
+    9: "Transform",
+    10: "Fortifying",
+    11: "Clean",
+    12: "Base",
+    13: "Road",
+    14: "Convert",
+    15: "Plant",
+}
+
 DEFAULT_ACTIVITY_TARGETS = {
     2: "Mine",
     3: "Irrigation",
@@ -51,6 +70,37 @@ DIRECTION_NAMES = {
     5: "southwest",
     6: "south",
     7: "southeast",
+}
+
+DIRECTION_DELTAS = {
+    0: (-1, -1),
+    1: (0, -1),
+    2: (1, -1),
+    3: (-1, 0),
+    4: (1, 0),
+    5: (-1, 1),
+    6: (0, 1),
+    7: (1, 1),
+}
+
+UNIVERSAL_KIND_NAMES = {
+    0: "None",
+    1: "Tech",
+    2: "Government",
+    3: "Building",
+    4: "Terrain",
+    5: "Nation",
+    6: "UnitType",
+    7: "UnitFlag",
+    8: "UnitClass",
+    9: "UnitClassFlag",
+    10: "OutputType",
+    11: "Specialist",
+    12: "MinSize",
+    13: "AI",
+    14: "TerrainClass",
+    15: "MinYear",
+    16: "TerrainAlter",
 }
 
 WATER_TERRAINS = {"Lake", "Ocean", "Deep Ocean"}
@@ -72,6 +122,88 @@ TERRAIN_ASCII = {
 }
 
 
+def valid_direction_ids(topology_id: int | None) -> list[int]:
+    topology_id = topology_id or 0
+    is_iso = bool(topology_id & 1)
+    is_hex = bool(topology_id & 2)
+    if is_iso and is_hex:
+        return [0, 1, 3, 4, 6, 7]
+    if is_hex:
+        return [1, 2, 3, 4, 5, 6]
+    return list(range(8))
+
+
+def direction_info(direction: int, topology_id: int | None = None) -> dict[str, Any]:
+    dx, dy = DIRECTION_DELTAS[direction]
+    result: dict[str, Any] = {
+        "id": direction,
+        "name": DIRECTION_NAMES[direction],
+        "dx": dx,
+        "dy": dy,
+    }
+    if topology_id is not None:
+        result["valid_for_topology"] = direction in valid_direction_ids(topology_id)
+    return result
+
+
+def topology_info(map_info: dict[str, int]) -> dict[str, Any]:
+    topology_id = map_info.get("topology_id")
+    wrap_id = map_info.get("wrap_id", 0)
+    is_isometric = bool((topology_id or 0) & 1)
+    is_hex = bool((topology_id or 0) & 2)
+    if is_isometric and is_hex:
+        topology_name = "isometric hex"
+    elif is_hex:
+        topology_name = "hex"
+    elif is_isometric:
+        topology_name = "isometric square"
+    else:
+        topology_name = "square"
+    wrap_x = bool(wrap_id & 1)
+    wrap_y = bool(wrap_id & 2)
+    if wrap_x and wrap_y:
+        wrap_name = "wraps east-west and north-south"
+    elif wrap_x:
+        wrap_name = "wraps east-west"
+    elif wrap_y:
+        wrap_name = "wraps north-south"
+    else:
+        wrap_name = "does not wrap"
+    valid = valid_direction_ids(topology_id)
+    return {
+        "id": topology_id,
+        "name": topology_name,
+        "is_isometric": is_isometric,
+        "is_hex": is_hex,
+        "wrap": {
+            "id": wrap_id,
+            "name": wrap_name,
+            "wrap_x": wrap_x,
+            "wrap_y": wrap_y,
+        },
+        "valid_directions": [
+            direction_info(direction)
+            for direction in valid
+        ],
+        "invalid_directions": [
+            direction_info(direction)
+            for direction in DIRECTION_NAMES
+            if direction not in valid
+        ],
+        "xsize": map_info.get("xsize"),
+        "ysize": map_info.get("ysize"),
+        "north_latitude": map_info.get("north_latitude"),
+        "south_latitude": map_info.get("south_latitude"),
+    }
+
+
+def format_valid_directions(topology_id: int | None) -> str:
+    return ", ".join(
+        f"{direction}:{DIRECTION_NAMES[direction]}"
+        for direction in valid_direction_ids(topology_id)
+    )
+
+
 @dataclass
 class PlayerState:
     name: str
@@ -85,6 +217,7 @@ class PlayerState:
     units: dict[int, dict[str, Any]] = field(default_factory=dict)
     cities: dict[int, dict[str, Any]] = field(default_factory=dict)
     unit_types: dict[int, dict[str, Any]] = field(default_factory=dict)
+    buildings: dict[int, dict[str, Any]] = field(default_factory=dict)
     extras: dict[int, dict[str, Any]] = field(default_factory=dict)
     terrains: dict[int, dict[str, Any]] = field(default_factory=dict)
     recent_messages: list[dict[str, Any]] = field(default_factory=list)
@@ -97,7 +230,7 @@ class PlayerState:
             if self.player_no is None or unit.get("owner") == self.player_no
         ]
         owned_cities = [
-            city for city in self.cities.values()
+            self._enrich_city(city) for city in self.cities.values()
             if self.player_no is None or city.get("owner") == self.player_no
         ]
         return {
@@ -108,9 +241,11 @@ class PlayerState:
             "turn": self.turn,
             "year": self.year,
             "map_info": self.map_info,
+            "map": self._map_view(),
             "units": owned_units,
             "cities": owned_cities,
             "unit_types": self.unit_types,
+            "buildings": self.buildings,
             "extras": self.extras,
             "terrains": self.terrains,
             "recent_messages": self.recent_messages[-20:],
@@ -125,7 +260,7 @@ class PlayerState:
             if self.player_no is None or unit.get("owner") == self.player_no
         ]
         owned_cities = [
-            self._brief_city(city)
+            self._brief_city(self._enrich_city(city))
             for city in self.cities.values()
             if self.player_no is None or city.get("owner") == self.player_no
         ]
@@ -135,26 +270,197 @@ class PlayerState:
             "player_no": self.player_no,
             "turn": self.turn,
             "year": self.year,
-            "map": self.map_info,
+            "map": self._map_view(),
             "cities": owned_cities,
             "units": owned_units,
             "known_tiles": len(self.tiles),
             "last_error": self.last_error,
         }
 
+    def _map_view(self) -> dict[str, Any]:
+        result = dict(self.map_info)
+        result["topology"] = topology_info(self.map_info)
+        return result
+
+    def _owner_info(self, owner_id: Any) -> dict[str, Any]:
+        if owner_id is None:
+            return {
+                "id": None,
+                "name": "unknown",
+                "relation": "unknown",
+            }
+        owner = int(owner_id)
+        if owner == 65535:
+            return {
+                "id": owner,
+                "name": "unowned",
+                "relation": "unowned",
+            }
+        if self.player_no is not None and owner == self.player_no:
+            return {
+                "id": owner,
+                "name": self.name,
+                "relation": "self",
+            }
+        return {
+            "id": owner,
+            "name": f"player {owner}",
+            "relation": "other",
+        }
+
+    def _unit_type_info(self, unit_type_id: Any) -> dict[str, Any]:
+        type_id = int(unit_type_id)
+        unit_type = self.unit_types.get(type_id)
+        if unit_type is None:
+            return {
+                "id": type_id,
+                "name": f"unknown unit type {type_id}",
+                "rule_name": None,
+                "known": False,
+            }
+        return {
+            "id": type_id,
+            "name": unit_type.get("name"),
+            "rule_name": unit_type.get("rule_name"),
+            "known": True,
+            "attack_strength": unit_type.get("attack_strength"),
+            "defense_strength": unit_type.get("defense_strength"),
+            "move_rate": unit_type.get("move_rate"),
+            "hp": unit_type.get("hp"),
+            "build_cost": unit_type.get("build_cost"),
+            "worker": unit_type.get("worker"),
+        }
+
+    def _terrain_info(self, terrain_id: Any) -> dict[str, Any]:
+        terrain_key = int(terrain_id)
+        terrain = self.terrains.get(terrain_key)
+        if terrain is None:
+            return {
+                "id": terrain_key,
+                "name": f"unknown terrain {terrain_key}",
+                "rule_name": None,
+                "known": False,
+            }
+        return {
+            "id": terrain_key,
+            "name": terrain.get("name"),
+            "rule_name": terrain.get("rule_name"),
+            "known": True,
+            "movement_cost": terrain.get("movement_cost"),
+            "defense_bonus": terrain.get("defense_bonus"),
+            "output": terrain.get("output"),
+        }
+
+    def _extra_info(self, extra_id: Any) -> dict[str, Any] | None:
+        extra_key = int(extra_id)
+        if extra_key < 0:
+            return None
+        if extra_key >= 250:
+            return {
+                "id": extra_key,
+                "name": "none",
+                "rule_name": None,
+                "known": True,
+                "meaning": "no extra/resource present",
+            }
+        extra = self.extras.get(extra_key)
+        if extra is None:
+            return {
+                "id": extra_key,
+                "name": f"unknown extra {extra_key}",
+                "rule_name": None,
+                "known": False,
+            }
+        return {
+            "id": extra_key,
+            "name": extra.get("name"),
+            "rule_name": extra.get("rule_name"),
+            "known": True,
+            "category": extra.get("category"),
+            "buildable": extra.get("buildable"),
+            "generated": extra.get("generated"),
+            "build_time": extra.get("build_time"),
+            "removal_time": extra.get("removal_time"),
+        }
+
+    def _activity_info(self, activity_id: Any, target_id: Any = None) -> dict[str, Any]:
+        activity = int(activity_id)
+        target = self._extra_info(target_id) if target_id is not None else None
+        return {
+            "id": activity,
+            "name": ACTIVITY_NAMES.get(activity, f"unknown activity {activity}"),
+            "target": target,
+        }
+
+    def _production_info(self, city: dict[str, Any]) -> dict[str, Any] | None:
+        if "production_kind" not in city or "production_value" not in city:
+            return None
+        kind_id = int(city["production_kind"])
+        value_id = int(city["production_value"])
+        kind_name = UNIVERSAL_KIND_NAMES.get(kind_id, f"unknown universal kind {kind_id}")
+        result: dict[str, Any] = {
+            "kind_id": kind_id,
+            "kind": kind_name,
+            "value_id": value_id,
+        }
+        if kind_id == 6:
+            target = self._unit_type_info(value_id)
+            result.update(
+                {
+                    "category": "unit",
+                    "name": target.get("name"),
+                    "rule_name": target.get("rule_name"),
+                    "target": target,
+                }
+            )
+        elif kind_id == 3:
+            building = self.buildings.get(value_id)
+            result.update(
+                {
+                    "category": "building",
+                    "name": building.get("name") if building else f"unknown building {value_id}",
+                    "rule_name": building.get("rule_name") if building else None,
+                    "target": building if building else None,
+                }
+            )
+        else:
+            result["category"] = "unknown"
+            result["name"] = f"{kind_name} {value_id}"
+        return result
+
     def _enrich_unit(self, unit: dict[str, Any]) -> dict[str, Any]:
         enriched = dict(unit)
+        if "owner" in unit:
+            enriched["owner_info"] = self._owner_info(unit.get("owner"))
         unit_type = self.unit_types.get(int(unit["type"])) if "type" in unit else None
         if unit_type is not None:
             enriched["type_name"] = unit_type.get("name")
             enriched["type_rule_name"] = unit_type.get("rule_name")
+            enriched["type_info"] = self._unit_type_info(unit["type"])
             for key in ("attack_strength", "defense_strength", "move_rate", "worker"):
                 if key in unit_type:
                     enriched[f"type_{key}"] = unit_type[key]
+        elif "type" in unit:
+            enriched["type_info"] = self._unit_type_info(unit["type"])
+        if "activity" in unit:
+            enriched["activity_info"] = self._activity_info(
+                unit["activity"],
+                unit.get("activity_tgt"),
+            )
         target = self.extras.get(int(unit["activity_tgt"])) if "activity_tgt" in unit else None
         if target is not None:
             enriched["activity_target_name"] = target.get("name")
             enriched["activity_target_rule_name"] = target.get("rule_name")
+            enriched["activity_target_info"] = self._extra_info(unit["activity_tgt"])
+        return enriched
+
+    def _enrich_city(self, city: dict[str, Any]) -> dict[str, Any]:
+        enriched = dict(city)
+        if "owner" in city:
+            enriched["owner_info"] = self._owner_info(city.get("owner"))
+        production = self._production_info(city)
+        if production is not None:
+            enriched["production"] = production
         return enriched
 
     @staticmethod
@@ -164,16 +470,20 @@ class PlayerState:
             [
                 "id",
                 "owner",
+                "owner_info",
                 "type",
                 "type_name",
                 "type_rule_name",
+                "type_info",
                 "tile",
                 "movesleft",
                 "hp",
                 "activity",
+                "activity_info",
                 "activity_tgt",
                 "activity_target_name",
                 "activity_target_rule_name",
+                "activity_target_info",
                 "done_moving",
                 "homecity",
             ],
@@ -186,12 +496,15 @@ class PlayerState:
             [
                 "id",
                 "name",
+                "owner",
+                "owner_info",
                 "tile",
                 "size",
                 "food_stock",
                 "shield_stock",
                 "production_kind",
                 "production_value",
+                "production",
             ],
         )
 
@@ -254,6 +567,7 @@ class ManagedAgent:
                 "center_tile": center_tile,
                 "center_map": {"x": center_map[0], "y": center_map[1]},
                 "radius": radius,
+                "map": self.state._map_view(),
                 "tiles": tiles,
             }
 
@@ -286,6 +600,7 @@ class ManagedAgent:
             "center_map": view["center_map"],
             "radius": view["radius"],
             "topology_id": self.state.map_info.get("topology_id"),
+            "topology": topology_info(self.state.map_info),
             "format": "freeciv-agent-ascii-view-v2",
             "text": text,
         }
@@ -311,6 +626,10 @@ class ManagedAgent:
                 moves.append(
                     {
                         "direction": direction,
+                        "direction_info": direction_info(
+                            direction,
+                            self.state.map_info.get("topology_id"),
+                        ),
                         "direction_name": DIRECTION_NAMES[direction],
                         "dx": dx,
                         "dy": dy,
@@ -318,6 +637,7 @@ class ManagedAgent:
                         "target_map": {"x": target_map[0], "y": target_map[1]},
                         "known": tile["known"],
                         "can_enter_known": can_enter_known,
+                        "enterability": self._enterability_info(can_enter_known, tile),
                         "tile": tile,
                     }
                 )
@@ -329,6 +649,7 @@ class ManagedAgent:
                 "current_tile": int(current_tile),
                 "current_map": {"x": current_map[0], "y": current_map[1]},
                 "topology_id": self.state.map_info.get("topology_id"),
+                "topology": topology_info(self.state.map_info),
                 "moves": moves,
             }
 
@@ -442,6 +763,10 @@ class ManagedAgent:
             "target_tile": target_tile,
             "packet": "PACKET_UNIT_ORDERS",
             "direction": direction,
+            "direction_info": direction_info(
+                direction,
+                self.state.map_info.get("topology_id"),
+            ),
             "before": PlayerState._brief_unit(before),
             "after": PlayerState._brief_unit(after) if after else None,
             "applied": bool(after and after.get("tile") == target_tile),
@@ -481,7 +806,9 @@ class ManagedAgent:
             "unit_id": unit_id,
             "packet": "PACKET_UNIT_CHANGE_ACTIVITY",
             "activity": activity_id,
+            "activity_info": self.state._activity_info(activity_id, target_id),
             "target": target_id,
+            "target_info": self.state._extra_info(target_id),
             "before": PlayerState._brief_unit(before),
             "after": PlayerState._brief_unit(after) if after else None,
             "applied": bool(
@@ -652,23 +979,31 @@ class ManagedAgent:
             "known": bool(tile),
         }
         result.update(compact_packet(tile, ["terrain", "resource", "owner", "worked", "label"]))
+        if "owner" in tile:
+            result["owner_info"] = self.state._owner_info(tile.get("owner"))
         terrain = self.state.terrains.get(int(tile["terrain"])) if "terrain" in tile else None
         if terrain is not None:
             result["terrain_name"] = terrain.get("name")
             result["terrain_rule_name"] = terrain.get("rule_name")
             result["movement_cost"] = terrain.get("movement_cost")
             result["defense_bonus"] = terrain.get("defense_bonus")
+            result["terrain_info"] = self.state._terrain_info(tile["terrain"])
+        elif "terrain" in tile:
+            result["terrain_info"] = self.state._terrain_info(tile["terrain"])
         resource = self.state.extras.get(int(tile["resource"])) if "resource" in tile else None
         if resource is not None:
             result["resource_name"] = resource.get("name")
             result["resource_rule_name"] = resource.get("rule_name")
+            result["resource_info"] = self.state._extra_info(tile["resource"])
+        elif "resource" in tile and self.state._extra_info(tile["resource"]) is not None:
+            result["resource_info"] = self.state._extra_info(tile["resource"])
         units = [
             PlayerState._brief_unit(self.state._enrich_unit(unit))
             for unit in self.state.units.values()
             if unit.get("tile") == tile_id
         ]
         cities = [
-            PlayerState._brief_city(city)
+            PlayerState._brief_city(self.state._enrich_city(city))
             for city in self.state.cities.values()
             if city.get("tile") == tile_id
         ]
@@ -707,6 +1042,7 @@ class ManagedAgent:
                 f"player={self.name} turn={view['turn']} year={view['year']} "
                 f"center={selector}:{selector_id} tile={view['center_tile']} "
                 f"map=({center_map['x']},{center_map['y']}) radius={radius} "
+                f"topology={topology_info(self.state.map_info)['name']} "
                 f"topology_id={self.state.map_info.get('topology_id')}"
             ),
             "cell=terrain+marker; dx/dy are relative to center",
@@ -915,43 +1251,40 @@ class ManagedAgent:
         for direction in self._valid_directions():
             if self._step_tile(src_tile, direction) == target_tile:
                 return direction
+        topology_id = self.state.map_info.get("topology_id")
         raise RuntimeError(
-            f"target tile {target_tile} is not adjacent to {src_tile}"
+            f"target tile {target_tile} is not adjacent to {src_tile} on "
+            f"topology_id {topology_id} ({topology_info(self.state.map_info)['name']}); "
+            f"valid directions are {format_valid_directions(topology_id)}"
         )
 
     def _step_tile(self, tile: int, direction: int) -> int | None:
         if direction not in self._valid_directions():
+            topology_id = self.state.map_info.get("topology_id")
+            direction_name = DIRECTION_NAMES.get(direction, f"unknown direction {direction}")
             raise RuntimeError(
-                f"direction {direction} is not valid for topology "
-                f"{self.state.map_info.get('topology_id')}"
+                f"direction {direction} ({direction_name}) is not valid for "
+                f"topology_id {topology_id} ({topology_info(self.state.map_info)['name']}); "
+                f"valid directions are {format_valid_directions(topology_id)}"
             )
         dx, dy = self._direction_delta(direction)
         map_x, map_y = self._index_to_map_pos(tile)
         return self._map_pos_to_index(map_x + dx, map_y + dy)
 
     def _direction_delta(self, direction: int) -> tuple[int, int]:
-        if direction < 0 or direction > 7:
-            raise RuntimeError(f"direction {direction} is outside 0..7")
-        return (
-            (-1, -1),
-            (0, -1),
-            (1, -1),
-            (-1, 0),
-            (1, 0),
-            (-1, 1),
-            (0, 1),
-            (1, 1),
-        )[direction]
+        try:
+            return DIRECTION_DELTAS[direction]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"direction {direction} is outside 0..7; known directions are "
+                + ", ".join(
+                    f"{item}:{name}"
+                    for item, name in DIRECTION_NAMES.items()
+                )
+            ) from exc
 
     def _valid_directions(self) -> list[int]:
-        topology_id = self.state.map_info.get("topology_id", 0)
-        is_iso = bool(topology_id & 1)
-        is_hex = bool(topology_id & 2)
-        if is_iso and is_hex:
-            return [0, 1, 3, 4, 6, 7]
-        if is_hex:
-            return [1, 2, 3, 4, 5, 6]
-        return list(range(8))
+        return valid_direction_ids(self.state.map_info.get("topology_id"))
 
     def _can_unit_enter_known_tile(
         self,
@@ -969,6 +1302,23 @@ class ManagedAgent:
         if is_land_unit and terrain in WATER_TERRAINS:
             return False
         return True
+
+    def _enterability_info(self, can_enter: bool | None, tile: dict[str, Any]) -> dict[str, Any]:
+        if can_enter is True:
+            return {
+                "can_enter": True,
+                "reason": "known tile appears enterable by this unit",
+            }
+        if can_enter is None:
+            return {
+                "can_enter": None,
+                "reason": "tile is unknown or lacks enough terrain data",
+            }
+        terrain = tile.get("terrain_rule_name") or "unknown terrain"
+        return {
+            "can_enter": False,
+            "reason": f"land unit cannot enter {terrain}",
+        }
 
     def _index_to_map_pos(self, tile: int) -> tuple[int, int]:
         xsize = self.state.map_info.get("xsize")
@@ -1098,6 +1448,21 @@ class ManagedAgent:
                         "hp",
                         "firepower",
                         "worker",
+                    ],
+                )
+                self._state_condition.notify_all()
+            elif pid == 150 and "id" in packet:
+                building_id = int(packet["id"])
+                self.state.buildings[building_id] = compact_packet(
+                    packet,
+                    [
+                        "id",
+                        "name",
+                        "rule_name",
+                        "genus",
+                        "build_cost",
+                        "upkeep",
+                        "sabotage",
                     ],
                 )
                 self._state_condition.notify_all()
