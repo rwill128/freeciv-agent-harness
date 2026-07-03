@@ -29,6 +29,21 @@ def main() -> None:
     found_city.add_argument("--unit-id", type=int)
     found_city.add_argument("--city-name", default="")
 
+    move_unit = subparsers.add_parser("move-unit")
+    move_unit.add_argument("name")
+    move_unit.add_argument("unit_id", type=int)
+    move_unit.add_argument("--target-tile", type=int)
+    move_unit.add_argument("--direction", type=int)
+    move_unit.add_argument("--dx", default=0, type=int)
+    move_unit.add_argument("--dy", default=0, type=int)
+
+    query_actions = subparsers.add_parser("query-actions")
+    query_actions.add_argument("name")
+    query_actions.add_argument("unit_id", type=int)
+    query_actions.add_argument("--target-tile", type=int)
+    query_actions.add_argument("--dx", default=0, type=int)
+    query_actions.add_argument("--dy", default=0, type=int)
+
     packet = subparsers.add_parser("packet")
     packet.add_argument("name")
     packet.add_argument("json_packet")
@@ -51,6 +66,26 @@ def main() -> None:
         if args.unit_id is not None:
             body["unit_id"] = args.unit_id
         result = request("POST", f"{args.base_url}/players/{args.name}/found-city", body)
+    elif args.command == "move-unit":
+        body = {
+            "unit_id": args.unit_id,
+            "dx": args.dx,
+            "dy": args.dy,
+        }
+        if args.target_tile is not None:
+            body["target_tile"] = args.target_tile
+        if args.direction is not None:
+            body["direction"] = args.direction
+        result = request("POST", f"{args.base_url}/players/{args.name}/move-unit", body)
+    elif args.command == "query-actions":
+        body = {
+            "unit_id": args.unit_id,
+            "dx": args.dx,
+            "dy": args.dy,
+        }
+        if args.target_tile is not None:
+            body["target_tile"] = args.target_tile
+        result = request("POST", f"{args.base_url}/players/{args.name}/query-actions", body)
     elif args.command == "packet":
         result = request(
             "POST",

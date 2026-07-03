@@ -72,6 +72,8 @@ python3 -m freeciv_agent.control_cli state
 python3 -m freeciv_agent.control_cli player AgentA
 python3 -m freeciv_agent.control_cli ready AgentA
 python3 -m freeciv_agent.control_cli found-city AgentA --city-name Alpha
+python3 -m freeciv_agent.control_cli query-actions AgentA 105 --dx 1
+python3 -m freeciv_agent.control_cli move-unit AgentA 105 --dx 1
 python3 -m freeciv_agent.control_cli phase-done AgentA
 python3 -m freeciv_agent.control_cli packet AgentA '{"pid":89}'
 ```
@@ -83,6 +85,8 @@ HTTP endpoints currently implemented:
 - `POST /players/{name}/ready`
 - `POST /players/{name}/phase-done`
 - `POST /players/{name}/found-city`
+- `POST /players/{name}/move-unit`
+- `POST /players/{name}/query-actions`
 - `POST /players/{name}/packet`
 
 ## Protocol Findings
@@ -137,10 +141,18 @@ Useful packet IDs:
 - `62`: `PACKET_UNIT_REMOVE`
 - `63`: `PACKET_UNIT_INFO`
 - `64`: `PACKET_UNIT_SHORT_INFO`
+- `73`: `PACKET_UNIT_ORDERS`
 - `84`: `PACKET_UNIT_DO_ACTION`
+- `87`: `PACKET_UNIT_GET_ACTIONS`
 - `88`: `PACKET_CONN_PING`
 - `89`: `PACKET_CONN_PONG`
+- `90`: `PACKET_UNIT_ACTIONS`
 - `127`: `PACKET_NEW_YEAR`
+
+`PACKET_MAP_INFO` provides `xsize`, `ysize`, topology, and wrap flags. In the
+current rectangular maps, tile IDs match `tile = y * xsize + x`. Verified
+examples: AgentA's starting tile `429` is `(15,23)` on an `18x36` map; AgentB's
+starting tile `569` is `(11,31)`.
 
 Freeciv uses delta encoding for many JSON packets. Delta packets include a
 `fields` byte array bitvector. Important examples:
@@ -148,6 +160,7 @@ Freeciv uses delta encoding for many JSON packets. Delta packets include a
 - Ready true first send: `{"pid":11,"fields":[3],"player_no":0}`
 - Phase done first send: `{"pid":52,"fields":[1],"turn":1}`
 - Unit action first send: `pid=84`, `fields:[31]`, and all five action fields.
+- Unit order first send for one-step movement: `pid=73`, `fields:[103]`.
 
 For player 0, fields with value zero may be omitted by delta encoding. The
 controller must treat omitted `owner` values in owned unit/city packets as the
@@ -195,6 +208,60 @@ The harness sends `PACKET_PLAYER_PHASE_DONE`:
 This has been verified to advance from turn 1 / year -4000 to turn 2 / year
 -3950 when both controlled players issue it.
 
+### Unit Move
+
+Ordinary movement uses `PACKET_UNIT_ORDERS`, not `PACKET_UNIT_DO_ACTION`.
+`Unit Move` action ID `110` exists in `common/actions.h`, but sending it via
+`PACKET_UNIT_DO_ACTION` did not move units in the normal map-click case.
+
+The working packet mirrors `client/control.c::request_unit_non_action_move`:
+
+```json
+{
+  "pid": 73,
+  "fields": [103],
+  "unit_id": 105,
+  "src_tile": 429,
+  "length": 1,
+  "orders": [
+    {
+      "order": 0,
+      "activity": 16,
+      "target": -1,
+      "sub_target": -1,
+      "action": 125,
+      "dir": 4
+    }
+  ],
+  "dest_tile": 448
+}
+```
+
+Relevant constants:
+
+- `ORDER_MOVE = 0`
+- `ACTIVITY_LAST = 16`
+- `NO_TARGET = -1`
+- `ACTION_NONE = 125`
+- Direction enum: northwest `0`, north `1`, northeast `2`, west `3`, east `4`,
+  southwest `5`, south `6`, southeast `7`
+
+Default maps here use topology `3` (`TF_ISO | TF_HEX`) and wrap `3`
+(`WRAP_X | WRAP_Y`). Do not translate relative movement with raw row-major tile
+math. Freeciv movement converts native tile indexes to map coordinates, applies
+`DIR_DX/DIR_DY`, and converts back. Example on the current map:
+
+- AgentA city tile `429`, `--dx 1` / direction `4`, lands on tile `448`.
+- AgentB city tile `569`, `--dx -1` / direction `3`, lands on tile `551`.
+
+The CLI can move by target tile or relative map delta:
+
+```sh
+python3 -m freeciv_agent.control_cli move-unit AgentA 105 --dx 1
+python3 -m freeciv_agent.control_cli move-unit AgentB 108 --dx -1
+python3 -m freeciv_agent.control_cli move-unit AgentA 105 --direction 4
+```
+
 ## Verified Two-Player Test
 
 With `aifill=0`, starting `AgentA` and `AgentB`, marking them ready, and using
@@ -207,19 +274,27 @@ the GTK observer:
 - Starting units for AgentB included unit IDs `102`, `106`, `107`, `108`.
 - Found-city commands created city IDs `116` and `117`.
 - Explicit phase-done commands advanced to turn 2.
+- Verified `PACKET_UNIT_ORDERS` movement advanced all six post-city starting
+  units:
+  - AgentA units `105`, `104`, `103`: `429 -> 448 -> 466`.
+  - AgentB units `108`, `107`, `106`: `569 -> 551 -> 532`.
+- Explicit phase-done commands advanced the game through turn 4 / year `-3850`.
+- AgentA produced a new city unit `118` at Alpha on turn 4, confirming
+  production-related city/unit updates are entering the state cache.
+- Explicit direction movement was also verified: `move-unit AgentA 118
+  --direction 4` moved the unit from tile `429` to tile `448`.
 
 ## Current Gaps
 
 Named commands still needed:
 
-- `move-unit`
 - `fortify`
 - `road`
 - `irrigate`
 - `mine`
 - `set-city-production`
 - `set-research`
-- `query-actions` / action availability inspection
+- richer `query-actions` / action availability inspection parsing
 
 Important open design question:
 
@@ -233,4 +308,3 @@ Avoid:
 - Autonomously ending turns in a loop while debugging. An earlier test
   advanced many turns accidentally. Prefer explicit one-command actions until
   the state/action loop is robust.
-

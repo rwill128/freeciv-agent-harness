@@ -22,6 +22,8 @@ class PlayerState:
     player_no: int | None = None
     turn: int | None = None
     year: int | None = None
+    map_info: dict[str, int] = field(default_factory=dict)
+    tiles: dict[int, dict[str, Any]] = field(default_factory=dict)
     units: dict[int, dict[str, Any]] = field(default_factory=dict)
     cities: dict[int, dict[str, Any]] = field(default_factory=dict)
     packet_counts: Counter[int | str] = field(default_factory=Counter)
@@ -43,6 +45,7 @@ class PlayerState:
             "player_no": self.player_no,
             "turn": self.turn,
             "year": self.year,
+            "map_info": self.map_info,
             "units": owned_units,
             "cities": owned_cities,
             "packet_counts": dict(self.packet_counts.most_common(20)),
@@ -56,6 +59,8 @@ class ManagedAgent:
         self.client = FreecivJsonClient(host, port, timeout=2.0)
         self.state = PlayerState(name=name)
         self._lock = threading.RLock()
+        self._actions_condition = threading.Condition(self._lock)
+        self._latest_actions: dict[str, Any] | None = None
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self) -> None:
@@ -124,9 +129,165 @@ class ManagedAgent:
             "action_type": 27,
         }
 
+    def move_unit(
+        self,
+        *,
+        unit_id: int,
+        target_tile: int | None = None,
+        direction: int | None = None,
+        dx: int = 0,
+        dy: int = 0,
+    ) -> dict[str, Any]:
+        with self._lock:
+            unit = self.state.units.get(unit_id)
+            if unit is None or unit.get("owner") != self.state.player_no:
+                raise RuntimeError(f"{self.name} does not own unit {unit_id}")
+            current_tile = unit.get("tile")
+            if current_tile is None:
+                raise RuntimeError(f"{self.name} unit {unit_id} has no known tile")
+            if direction is not None:
+                target_tile = self._step_tile(int(current_tile), direction)
+                if target_tile is None:
+                    raise RuntimeError(
+                        f"direction {direction} from tile {current_tile} is invalid"
+                    )
+            elif target_tile is None:
+                target_tile = self._relative_tile(int(current_tile), dx, dy)
+                direction = self._direction_to_target(int(current_tile), target_tile)
+            else:
+                direction = self._direction_to_target(int(current_tile), target_tile)
+
+        self.client.send_unit_move_order(
+            unit_id=unit_id,
+            src_tile=int(current_tile),
+            dest_tile=target_tile,
+            direction=direction,
+        )
+        return {
+            "ok": True,
+            "player": self.name,
+            "unit_id": unit_id,
+            "from_tile": current_tile,
+            "target_tile": target_tile,
+            "packet": "PACKET_UNIT_ORDERS",
+            "direction": direction,
+        }
+
+    def query_actions(
+        self,
+        *,
+        unit_id: int,
+        target_tile: int | None = None,
+        dx: int = 0,
+        dy: int = 0,
+        timeout: float = 2.0,
+    ) -> dict[str, Any]:
+        with self._actions_condition:
+            unit = self.state.units.get(unit_id)
+            if unit is None or unit.get("owner") != self.state.player_no:
+                raise RuntimeError(f"{self.name} does not own unit {unit_id}")
+            current_tile = unit.get("tile")
+            if current_tile is None:
+                raise RuntimeError(f"{self.name} unit {unit_id} has no known tile")
+            if target_tile is None:
+                target_tile = self._relative_tile(int(current_tile), dx, dy)
+            self._latest_actions = None
+
+        self.client.send_unit_get_actions(
+            actor_unit_id=unit_id,
+            target_tile_id=target_tile,
+            target_unit_id=0,
+            target_extra_id=-1,
+            request_kind=0,
+        )
+
+        deadline = time.monotonic() + timeout
+        with self._actions_condition:
+            while time.monotonic() < deadline:
+                if (
+                    self._latest_actions is not None
+                    and self._latest_actions.get("actor_unit_id") == unit_id
+                    and self._latest_actions.get("target_tile_id") == target_tile
+                ):
+                    return self._latest_actions
+                self._actions_condition.wait(deadline - time.monotonic())
+        raise TimeoutError(f"timed out waiting for actions for unit {unit_id}")
+
     def send_raw(self, packet: dict[str, Any]) -> dict[str, Any]:
         self.client.send_packet(packet)
         return {"ok": True, "player": self.name, "sent": packet}
+
+    def _relative_tile(self, tile: int, dx: int, dy: int) -> int:
+        map_x, map_y = self._index_to_map_pos(tile)
+        target_tile = self._map_pos_to_index(map_x + dx, map_y + dy)
+        if target_tile is None:
+            raise RuntimeError(
+                f"target map position {map_x + dx},{map_y + dy} is outside the map"
+            )
+        return target_tile
+
+    def _direction_to_target(self, src_tile: int, target_tile: int) -> int:
+        for direction in range(8):
+            if self._step_tile(src_tile, direction) == target_tile:
+                return direction
+        raise RuntimeError(
+            f"target tile {target_tile} is not adjacent to {src_tile}"
+        )
+
+    def _step_tile(self, tile: int, direction: int) -> int | None:
+        if direction < 0 or direction > 7:
+            raise RuntimeError(f"direction {direction} is outside 0..7")
+        dx, dy = (
+            (-1, -1),
+            (0, -1),
+            (1, -1),
+            (-1, 0),
+            (1, 0),
+            (-1, 1),
+            (0, 1),
+            (1, 1),
+        )[direction]
+        map_x, map_y = self._index_to_map_pos(tile)
+        return self._map_pos_to_index(map_x + dx, map_y + dy)
+
+    def _index_to_map_pos(self, tile: int) -> tuple[int, int]:
+        xsize = self.state.map_info.get("xsize")
+        if not xsize:
+            raise RuntimeError(f"{self.name} does not know map dimensions yet")
+        nat_x = tile % xsize
+        nat_y = tile // xsize
+        if self._is_isometric():
+            map_x = (nat_y + (nat_y & 1)) // 2 + nat_x
+            map_y = nat_y - map_x + xsize
+            return map_x, map_y
+        return nat_x, nat_y
+
+    def _map_pos_to_index(self, map_x: int, map_y: int) -> int | None:
+        xsize = self.state.map_info.get("xsize")
+        ysize = self.state.map_info.get("ysize")
+        wrap_id = self.state.map_info.get("wrap_id", 0)
+        if not xsize or not ysize:
+            raise RuntimeError(f"{self.name} does not know map dimensions yet")
+        if self._is_isometric():
+            nat_y = map_x + map_y - xsize
+            nat_x = int((2 * map_x - nat_y - (nat_y & 1)) / 2)
+        else:
+            nat_x = map_x
+            nat_y = map_y
+
+        if wrap_id & 1:
+            nat_x %= xsize
+        elif nat_x < 0 or nat_x >= xsize:
+            return None
+
+        if wrap_id & 2:
+            nat_y %= ysize
+        elif nat_y < 0 or nat_y >= ysize:
+            return None
+        return nat_y * xsize + nat_x
+
+    def _is_isometric(self) -> bool:
+        return bool(self.state.map_info.get("topology_id", 0) & 3)
 
     def _run(self) -> None:
         try:
@@ -162,6 +323,40 @@ class ManagedAgent:
                     self.state.turn = int(packet["turn"])
                 if "year" in packet:
                     self.state.year = int(packet["year"])
+            elif pid == 17:
+                self.state.map_info.update(
+                    {
+                        key: int(packet[key])
+                        for key in (
+                            "xsize",
+                            "ysize",
+                            "topology_id",
+                            "wrap_id",
+                            "north_latitude",
+                            "south_latitude",
+                        )
+                        if key in packet
+                    }
+                )
+            elif pid == 15 and "tile" in packet:
+                tile_id = int(packet["tile"])
+                current = self.state.tiles.get(tile_id, {})
+                current.update(
+                    compact_packet(
+                        packet,
+                        [
+                            "tile",
+                            "continent",
+                            "known",
+                            "owner",
+                            "terrain",
+                            "resource",
+                            "worked",
+                            "label",
+                        ],
+                    )
+                )
+                self.state.tiles[tile_id] = current
             elif (
                 pid == 51
                 and packet.get("username") == self.name
@@ -247,6 +442,10 @@ class ManagedAgent:
                     self.state.turn = int(packet["turn"])
                 if "year" in packet:
                     self.state.year = int(packet["year"])
+            elif pid == 90:
+                actions = dict(packet)
+                self._latest_actions = actions
+                self._actions_condition.notify_all()
 
 
 class ControlState:
@@ -315,6 +514,39 @@ def make_handler(control: ControlState) -> type[BaseHTTPRequestHandler]:
                             agent.found_city(
                                 unit_id=unit_id,
                                 city_name=str(body.get("city_name", "")),
+                            )
+                        )
+                        return
+                    if command == "move-unit":
+                        self._send_json(
+                            agent.move_unit(
+                                unit_id=int(body["unit_id"]),
+                                target_tile=(
+                                    int(body["target_tile"])
+                                    if body.get("target_tile") is not None
+                                    else None
+                                ),
+                                direction=(
+                                    int(body["direction"])
+                                    if body.get("direction") is not None
+                                    else None
+                                ),
+                                dx=int(body.get("dx", 0)),
+                                dy=int(body.get("dy", 0)),
+                            )
+                        )
+                        return
+                    if command == "query-actions":
+                        self._send_json(
+                            agent.query_actions(
+                                unit_id=int(body["unit_id"]),
+                                target_tile=(
+                                    int(body["target_tile"])
+                                    if body.get("target_tile") is not None
+                                    else None
+                                ),
+                                dx=int(body.get("dx", 0)),
+                                dy=int(body.get("dy", 0)),
                             )
                         )
                         return

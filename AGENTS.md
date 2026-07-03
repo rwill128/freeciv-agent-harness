@@ -18,6 +18,8 @@ Read `docs/freeciv-agent-harness.md` before changing protocol or runtime code.
 python3 -m freeciv_agent.control_server --players AgentA AgentB
 python3 -m freeciv_agent.control_cli state
 python3 -m freeciv_agent.control_cli found-city AgentA --city-name Alpha
+python3 -m freeciv_agent.control_cli move-unit AgentA 105 --dx 1
+python3 -m freeciv_agent.control_cli move-unit AgentA 105 --direction 4
 python3 -m freeciv_agent.control_cli phase-done AgentA
 ```
 
@@ -26,8 +28,8 @@ python3 -m freeciv_agent.control_cli phase-done AgentA
 - Do not reintroduce automatic turn-ending loops for debugging. Use explicit
   one-command actions.
 - Prefer named high-level commands over raw packet sends.
+- Unit movement uses `PACKET_UNIT_ORDERS`, not `PACKET_UNIT_DO_ACTION`.
 - Keep the GTK observer path working; this project is for visible recorded
   games, not headless-only play.
 - Add new packet IDs, quirks, and verified command shapes to
   `docs/freeciv-agent-harness.md`.
-

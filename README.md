@@ -50,10 +50,15 @@ python3 -m freeciv_agent.control_cli state
 python3 -m freeciv_agent.control_cli ready AgentA
 python3 -m freeciv_agent.control_cli phase-done AgentA
 python3 -m freeciv_agent.control_cli found-city AgentA --city-name Alpha
+python3 -m freeciv_agent.control_cli move-unit AgentA 105 --dx 1
+python3 -m freeciv_agent.control_cli move-unit AgentA 105 --direction 4
 python3 -m freeciv_agent.control_cli packet AgentA '{"pid":89}'
 ```
 
 Implemented commands cover join, ready, phase done, ping/pong, compact unit/city
-state, and a raw packet escape hatch. The next layer should add named commands
-for unit movement, city production, and city founding instead of requiring raw
-packet IDs.
+state, city founding, unit movement, action queries, and a raw packet escape
+hatch. Unit movement uses Freeciv `PACKET_UNIT_ORDERS` and accounts for the
+default isometric-hex map topology when translating `--dx/--dy`.
+
+Still-needed named commands include city production, research selection, and
+worker activities such as road, irrigate, mine, and fortify.

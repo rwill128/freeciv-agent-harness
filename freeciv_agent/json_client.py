@@ -174,6 +174,56 @@ class FreecivJsonClient:
             }
         )
 
+    def send_unit_get_actions(
+        self,
+        *,
+        actor_unit_id: int,
+        target_tile_id: int,
+        target_unit_id: int = 0,
+        target_extra_id: int = -1,
+        request_kind: int = 0,
+    ) -> None:
+        self.send_packet(
+            {
+                "pid": 87,
+                "fields": _bitvector_bytes(5, [0, 1, 2, 3, 4]),
+                "actor_unit_id": actor_unit_id,
+                "target_unit_id": target_unit_id,
+                "target_tile_id": target_tile_id,
+                "target_extra_id": target_extra_id,
+                "request_kind": request_kind,
+            }
+        )
+
+    def send_unit_move_order(
+        self,
+        *,
+        unit_id: int,
+        src_tile: int,
+        dest_tile: int,
+        direction: int,
+    ) -> None:
+        self.send_packet(
+            {
+                "pid": 73,
+                "fields": _bitvector_bytes(7, [0, 1, 2, 5, 6]),
+                "unit_id": unit_id,
+                "src_tile": src_tile,
+                "length": 1,
+                "orders": [
+                    {
+                        "order": 0,
+                        "activity": 16,
+                        "target": -1,
+                        "sub_target": -1,
+                        "action": 125,
+                        "dir": direction,
+                    }
+                ],
+                "dest_tile": dest_tile,
+            }
+        )
+
     def _require_socket(self) -> socket.socket:
         if self._sock is None:
             raise RuntimeError("client is not connected")
