@@ -75,9 +75,10 @@ python3 -m freeciv_agent.control_cli packet AgentA '{"pid":89}'
 ```
 
 Implemented commands cover join, ready, phase done, ping/pong, compact unit/city
-state, city founding, unit movement, action queries, and a raw packet escape
-hatch. Unit movement uses Freeciv `PACKET_UNIT_ORDERS` and accounts for the
-default isometric-hex map topology when translating `--dx/--dy`.
+state, ruleset unit-type decoding, city founding, unit movement, action queries,
+and a raw packet escape hatch. Unit movement uses Freeciv `PACKET_UNIT_ORDERS`
+and accounts for the default isometric-hex map topology when translating
+`--dx/--dy`.
 
 Still-needed named commands include city production, research selection, and
 worker activities such as road, irrigate, mine, and fortify.

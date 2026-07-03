@@ -26,12 +26,13 @@ class PlayerState:
     tiles: dict[int, dict[str, Any]] = field(default_factory=dict)
     units: dict[int, dict[str, Any]] = field(default_factory=dict)
     cities: dict[int, dict[str, Any]] = field(default_factory=dict)
+    unit_types: dict[int, dict[str, Any]] = field(default_factory=dict)
     packet_counts: Counter[int | str] = field(default_factory=Counter)
     last_error: str | None = None
 
     def as_json(self) -> dict[str, Any]:
         owned_units = [
-            unit for unit in self.units.values()
+            self._enrich_unit(unit) for unit in self.units.values()
             if self.player_no is None or unit.get("owner") == self.player_no
         ]
         owned_cities = [
@@ -48,9 +49,21 @@ class PlayerState:
             "map_info": self.map_info,
             "units": owned_units,
             "cities": owned_cities,
+            "unit_types": self.unit_types,
             "packet_counts": dict(self.packet_counts.most_common(20)),
             "last_error": self.last_error,
         }
+
+    def _enrich_unit(self, unit: dict[str, Any]) -> dict[str, Any]:
+        enriched = dict(unit)
+        unit_type = self.unit_types.get(int(unit["type"])) if "type" in unit else None
+        if unit_type is not None:
+            enriched["type_name"] = unit_type.get("name")
+            enriched["type_rule_name"] = unit_type.get("rule_name")
+            for key in ("attack_strength", "defense_strength", "move_rate", "worker"):
+                if key in unit_type:
+                    enriched[f"type_{key}"] = unit_type[key]
+        return enriched
 
 
 class ManagedAgent:
@@ -357,6 +370,27 @@ class ManagedAgent:
                     )
                 )
                 self.state.tiles[tile_id] = current
+            elif pid == 140 and "id" in packet:
+                unit_type_id = int(packet["id"])
+                self.state.unit_types[unit_type_id] = compact_packet(
+                    packet,
+                    [
+                        "id",
+                        "name",
+                        "rule_name",
+                        "unit_class_id",
+                        "build_cost",
+                        "pop_cost",
+                        "attack_strength",
+                        "defense_strength",
+                        "move_rate",
+                        "vision_radius_sq",
+                        "transport_capacity",
+                        "hp",
+                        "firepower",
+                        "worker",
+                    ],
+                )
             elif (
                 pid == 51
                 and packet.get("username") == self.name

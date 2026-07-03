@@ -189,6 +189,7 @@ Useful packet IDs:
 - `89`: `PACKET_CONN_PONG`
 - `90`: `PACKET_UNIT_ACTIONS`
 - `127`: `PACKET_NEW_YEAR`
+- `140`: `PACKET_RULESET_UNIT`
 
 `PACKET_MAP_INFO` provides `xsize`, `ysize`, topology, and wrap flags. In the
 current rectangular maps, tile IDs match `tile = y * xsize + x`. Verified
@@ -206,6 +207,13 @@ Freeciv uses delta encoding for many JSON packets. Delta packets include a
 For player 0, fields with value zero may be omitted by delta encoding. The
 controller must treat omitted `owner` values in owned unit/city packets as the
 current player's `player_no` when reconstructing state.
+
+The control server now parses `PACKET_RULESET_UNIT` into `unit_types` and
+enriches each owned unit in `/state` with `type_name`, `type_rule_name`, and
+basic unit-type stats such as attack, defense, move rate, and worker flag when
+present. This was needed for turn policy because the live state otherwise only
+said type `52`, `48`, `2`, and `4`; decoded, those are Explorer, Diplomat,
+Workers, and Warriors in the current ruleset.
 
 ## Implemented Actions
 
@@ -324,6 +332,12 @@ the GTK observer:
   production-related city/unit updates are entering the state cache.
 - Explicit direction movement was also verified: `move-unit AgentA 118
   --direction 4` moved the unit from tile `429` to tile `448`.
+- Turn 4 self-play policy used decoded unit types:
+  - AgentA Explorer scouted to tile `468`; Worker and Diplomat pulled back to
+    tile `448`; Warrior returned to Alpha at turn transition.
+  - AgentB Explorer scouted to tile `479`; Worker and Diplomat pulled back to
+    tile `551`; Beta produced Warrior `119`.
+  - Explicit phase-done commands advanced both players to turn 5 / year `-3800`.
 
 ## Current Gaps
 
