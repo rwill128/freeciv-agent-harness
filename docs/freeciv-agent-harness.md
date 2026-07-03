@@ -110,6 +110,8 @@ CLI examples:
 
 ```sh
 python3 -m freeciv_agent.control_cli state
+python3 -m freeciv_agent.control_cli brief
+python3 -m freeciv_agent.control_cli brief AgentA
 python3 -m freeciv_agent.control_cli player AgentA
 python3 -m freeciv_agent.control_cli ready AgentA
 python3 -m freeciv_agent.control_cli found-city AgentA --city-name Alpha
@@ -122,7 +124,9 @@ python3 -m freeciv_agent.control_cli packet AgentA '{"pid":89}'
 HTTP endpoints currently implemented:
 
 - `GET /state`
+- `GET /brief`
 - `GET /players/{name}`
+- `GET /players/{name}/brief`
 - `POST /players/{name}/ready`
 - `POST /players/{name}/phase-done`
 - `POST /players/{name}/found-city`
@@ -214,6 +218,11 @@ basic unit-type stats such as attack, defense, move rate, and worker flag when
 present. This was needed for turn policy because the live state otherwise only
 said type `52`, `48`, `2`, and `4`; decoded, those are Explorer, Diplomat,
 Workers, and Warriors in the current ruleset.
+
+`GET /brief` is the preferred state payload for LLM-agent turns. It omits the
+large `unit_types` table and packet counters, keeps decoded owned units and
+cities, and includes a count of known tiles. `GET /state` remains the full
+debugging payload.
 
 ## Implemented Actions
 
@@ -310,6 +319,24 @@ python3 -m freeciv_agent.control_cli move-unit AgentA 105 --dx 1
 python3 -m freeciv_agent.control_cli move-unit AgentB 108 --dx -1
 python3 -m freeciv_agent.control_cli move-unit AgentA 105 --direction 4
 ```
+
+`move-unit` waits briefly for an observed unit update and returns both the
+attempted order and the observed result:
+
+```json
+{
+  "before": {"id": 105, "tile": 468, "movesleft": 6, "type_name": "Explorer"},
+  "after": {"id": 105, "tile": 486, "movesleft": 4, "type_name": "Explorer"},
+  "applied": true,
+  "observed_changed": true,
+  "target_tile": 486,
+  "direction": 4
+}
+```
+
+If Freeciv accepts but does not immediately apply an order, `applied` will be
+false and `after` reflects the last observed state. Agents should inspect this
+instead of assuming every sent command changed the game.
 
 ## Verified Two-Player Test
 

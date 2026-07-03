@@ -14,6 +14,9 @@ def main() -> None:
 
     subparsers.add_parser("state")
 
+    brief = subparsers.add_parser("brief")
+    brief.add_argument("name", nargs="?")
+
     player_state = subparsers.add_parser("player")
     player_state.add_argument("name")
 
@@ -36,6 +39,7 @@ def main() -> None:
     move_unit.add_argument("--direction", type=int)
     move_unit.add_argument("--dx", default=0, type=int)
     move_unit.add_argument("--dy", default=0, type=int)
+    move_unit.add_argument("--wait", default=1.0, type=float)
 
     query_actions = subparsers.add_parser("query-actions")
     query_actions.add_argument("name")
@@ -52,6 +56,11 @@ def main() -> None:
 
     if args.command == "state":
         result = request("GET", f"{args.base_url}/state")
+    elif args.command == "brief":
+        if args.name:
+            result = request("GET", f"{args.base_url}/players/{args.name}/brief")
+        else:
+            result = request("GET", f"{args.base_url}/brief")
     elif args.command == "player":
         result = request("GET", f"{args.base_url}/players/{args.name}")
     elif args.command == "ready":
@@ -71,6 +80,7 @@ def main() -> None:
             "unit_id": args.unit_id,
             "dx": args.dx,
             "dy": args.dy,
+            "wait": args.wait,
         }
         if args.target_tile is not None:
             body["target_tile"] = args.target_tile

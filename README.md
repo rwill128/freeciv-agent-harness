@@ -66,6 +66,8 @@ exposes a local control surface:
 ```sh
 python3 -m freeciv_agent.control_server --players AgentA AgentB
 python3 -m freeciv_agent.control_cli state
+python3 -m freeciv_agent.control_cli brief
+python3 -m freeciv_agent.control_cli brief AgentA
 python3 -m freeciv_agent.control_cli ready AgentA
 python3 -m freeciv_agent.control_cli phase-done AgentA
 python3 -m freeciv_agent.control_cli found-city AgentA --city-name Alpha
@@ -78,7 +80,9 @@ Implemented commands cover join, ready, phase done, ping/pong, compact unit/city
 state, ruleset unit-type decoding, city founding, unit movement, action queries,
 and a raw packet escape hatch. Unit movement uses Freeciv `PACKET_UNIT_ORDERS`
 and accounts for the default isometric-hex map topology when translating
-`--dx/--dy`.
+`--dx/--dy`. `move-unit` returns both the attempted order and observed unit
+state after the command, so an agent can distinguish an applied move from a sent
+but unapplied order.
 
 Still-needed named commands include city production, research selection, and
 worker activities such as road, irrigate, mine, and fortify.

@@ -54,6 +54,30 @@ class PlayerState:
             "last_error": self.last_error,
         }
 
+    def as_brief_json(self) -> dict[str, Any]:
+        owned_units = [
+            self._brief_unit(self._enrich_unit(unit))
+            for unit in self.units.values()
+            if self.player_no is None or unit.get("owner") == self.player_no
+        ]
+        owned_cities = [
+            self._brief_city(city)
+            for city in self.cities.values()
+            if self.player_no is None or city.get("owner") == self.player_no
+        ]
+        return {
+            "name": self.name,
+            "connected": self.connected,
+            "player_no": self.player_no,
+            "turn": self.turn,
+            "year": self.year,
+            "map": self.map_info,
+            "cities": owned_cities,
+            "units": owned_units,
+            "known_tiles": len(self.tiles),
+            "last_error": self.last_error,
+        }
+
     def _enrich_unit(self, unit: dict[str, Any]) -> dict[str, Any]:
         enriched = dict(unit)
         unit_type = self.unit_types.get(int(unit["type"])) if "type" in unit else None
@@ -65,6 +89,40 @@ class PlayerState:
                     enriched[f"type_{key}"] = unit_type[key]
         return enriched
 
+    @staticmethod
+    def _brief_unit(unit: dict[str, Any]) -> dict[str, Any]:
+        return compact_packet(
+            unit,
+            [
+                "id",
+                "type",
+                "type_name",
+                "type_rule_name",
+                "tile",
+                "movesleft",
+                "hp",
+                "activity",
+                "done_moving",
+                "homecity",
+            ],
+        )
+
+    @staticmethod
+    def _brief_city(city: dict[str, Any]) -> dict[str, Any]:
+        return compact_packet(
+            city,
+            [
+                "id",
+                "name",
+                "tile",
+                "size",
+                "food_stock",
+                "shield_stock",
+                "production_kind",
+                "production_value",
+            ],
+        )
+
 
 class ManagedAgent:
     def __init__(self, name: str, host: str, port: int) -> None:
@@ -72,6 +130,7 @@ class ManagedAgent:
         self.client = FreecivJsonClient(host, port, timeout=2.0)
         self.state = PlayerState(name=name)
         self._lock = threading.RLock()
+        self._state_condition = threading.Condition(self._lock)
         self._actions_condition = threading.Condition(self._lock)
         self._latest_actions: dict[str, Any] | None = None
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -82,6 +141,10 @@ class ManagedAgent:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return self.state.as_json()
+
+    def brief(self) -> dict[str, Any]:
+        with self._lock:
+            return self.state.as_brief_json()
 
     def ready(self, is_ready: bool = True) -> dict[str, Any]:
         with self._lock:
@@ -150,6 +213,7 @@ class ManagedAgent:
         direction: int | None = None,
         dx: int = 0,
         dy: int = 0,
+        wait: float = 1.0,
     ) -> dict[str, Any]:
         with self._lock:
             unit = self.state.units.get(unit_id)
@@ -169,12 +233,20 @@ class ManagedAgent:
                 direction = self._direction_to_target(int(current_tile), target_tile)
             else:
                 direction = self._direction_to_target(int(current_tile), target_tile)
+            before = self.state._enrich_unit(unit)
 
         self.client.send_unit_move_order(
             unit_id=unit_id,
             src_tile=int(current_tile),
             dest_tile=target_tile,
             direction=direction,
+        )
+
+        after = self._wait_for_unit_observation(
+            unit_id=unit_id,
+            previous=before,
+            target_tile=target_tile,
+            wait=wait,
         )
         return {
             "ok": True,
@@ -184,6 +256,10 @@ class ManagedAgent:
             "target_tile": target_tile,
             "packet": "PACKET_UNIT_ORDERS",
             "direction": direction,
+            "before": PlayerState._brief_unit(before),
+            "after": PlayerState._brief_unit(after) if after else None,
+            "applied": bool(after and after.get("tile") == target_tile),
+            "observed_changed": bool(after and self._unit_changed(before, after)),
         }
 
     def query_actions(
@@ -229,6 +305,33 @@ class ManagedAgent:
     def send_raw(self, packet: dict[str, Any]) -> dict[str, Any]:
         self.client.send_packet(packet)
         return {"ok": True, "player": self.name, "sent": packet}
+
+    def _wait_for_unit_observation(
+        self,
+        *,
+        unit_id: int,
+        previous: dict[str, Any],
+        target_tile: int,
+        wait: float,
+    ) -> dict[str, Any] | None:
+        deadline = time.monotonic() + wait
+        with self._state_condition:
+            while True:
+                current = self.state.units.get(unit_id)
+                enriched = self.state._enrich_unit(current) if current else None
+                if enriched and (
+                    enriched.get("tile") == target_tile
+                    or self._unit_changed(previous, enriched)
+                ):
+                    return enriched
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return enriched
+                self._state_condition.wait(remaining)
+
+    @staticmethod
+    def _unit_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
+        return any(before.get(key) != after.get(key) for key in ("tile", "movesleft", "hp", "activity"))
 
     def _relative_tile(self, tile: int, dx: int, dy: int) -> int:
         map_x, map_y = self._index_to_map_pos(tile)
@@ -336,6 +439,7 @@ class ManagedAgent:
                     self.state.turn = int(packet["turn"])
                 if "year" in packet:
                     self.state.year = int(packet["year"])
+                self._state_condition.notify_all()
             elif pid == 17:
                 self.state.map_info.update(
                     {
@@ -370,6 +474,7 @@ class ManagedAgent:
                     )
                 )
                 self.state.tiles[tile_id] = current
+                self._state_condition.notify_all()
             elif pid == 140 and "id" in packet:
                 unit_type_id = int(packet["id"])
                 self.state.unit_types[unit_type_id] = compact_packet(
@@ -391,12 +496,14 @@ class ManagedAgent:
                         "worker",
                     ],
                 )
+                self._state_condition.notify_all()
             elif (
                 pid == 51
                 and packet.get("username") == self.name
                 and "playerno" in packet
             ):
                 self.state.player_no = int(packet["playerno"])
+                self._state_condition.notify_all()
             elif pid == 63 and "id" in packet:
                 unit_id = int(packet["id"])
                 current = self.state.units.get(unit_id, {})
@@ -419,6 +526,7 @@ class ManagedAgent:
                 if "owner" not in current and self.state.player_no is not None:
                     current["owner"] = self.state.player_no
                 self.state.units[unit_id] = current
+                self._state_condition.notify_all()
             elif pid == 64 and "id" in packet:
                 unit_id = int(packet["id"])
                 current = self.state.units.get(unit_id, {})
@@ -441,10 +549,12 @@ class ManagedAgent:
                 if "owner" not in current and self.state.player_no is not None:
                     current["owner"] = self.state.player_no
                 self.state.units[unit_id] = current
+                self._state_condition.notify_all()
             elif pid == 62:
                 unit_id = packet.get("unit_id", packet.get("id"))
                 if unit_id is not None:
                     self.state.units.pop(int(unit_id), None)
+                    self._state_condition.notify_all()
             elif pid == 31 and "id" in packet:
                 city_id = int(packet["id"])
                 current = self.state.cities.get(city_id, {})
@@ -467,15 +577,18 @@ class ManagedAgent:
                 if "owner" not in current and self.state.player_no is not None:
                     current["owner"] = self.state.player_no
                 self.state.cities[city_id] = current
+                self._state_condition.notify_all()
             elif pid == 30:
                 city_id = packet.get("id")
                 if city_id is not None:
                     self.state.cities.pop(int(city_id), None)
+                    self._state_condition.notify_all()
             elif pid == 127:
                 if "turn" in packet:
                     self.state.turn = int(packet["turn"])
                 if "year" in packet:
                     self.state.year = int(packet["year"])
+                self._state_condition.notify_all()
             elif pid == 90:
                 actions = dict(packet)
                 self._latest_actions = actions
@@ -495,6 +608,14 @@ class ControlState:
         return {
             "players": {
                 name: agent.snapshot()
+                for name, agent in self.agents.items()
+            }
+        }
+
+    def brief(self) -> dict[str, Any]:
+        return {
+            "players": {
+                name: agent.brief()
                 for name, agent in self.agents.items()
             }
         }
@@ -519,8 +640,14 @@ def make_handler(control: ControlState) -> type[BaseHTTPRequestHandler]:
                 if parts == ["state"]:
                     self._send_json(control.snapshot())
                     return
+                if parts == ["brief"]:
+                    self._send_json(control.brief())
+                    return
                 if len(parts) == 2 and parts[0] == "players":
                     self._send_json(control.agent(parts[1]).snapshot())
+                    return
+                if len(parts) == 3 and parts[0] == "players" and parts[2] == "brief":
+                    self._send_json(control.agent(parts[1]).brief())
                     return
                 self._send_json({"error": "not found"}, status=404)
             except Exception as exc:
@@ -567,6 +694,7 @@ def make_handler(control: ControlState) -> type[BaseHTTPRequestHandler]:
                                 ),
                                 dx=int(body.get("dx", 0)),
                                 dy=int(body.get("dy", 0)),
+                                wait=float(body.get("wait", 1.0)),
                             )
                         )
                         return
