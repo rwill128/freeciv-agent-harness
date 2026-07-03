@@ -19,6 +19,7 @@ Read `docs/freeciv-agent-harness.md` before changing protocol or runtime code.
 python3 -m freeciv_agent.control_server --players AgentA AgentB
 python3 -m freeciv_agent.control_cli state
 python3 -m freeciv_agent.control_cli brief
+python3 -m freeciv_agent.control_cli messages AgentA --limit 20
 python3 -m freeciv_agent.control_cli local-view AgentA --unit-id 105 --radius 2
 python3 -m freeciv_agent.control_cli ascii-view AgentA --unit-id 105 --radius 3 --text
 python3 -m freeciv_agent.control_cli valid-moves AgentA 105
@@ -41,6 +42,8 @@ python3 -m freeciv_agent.control_cli phase-done AgentA
   activity unless an LLM-facing workflow clearly needs a semantic shortcut.
 - `brief` is the preferred state read for an LLM agent turn; `state` is the
   full debugging payload.
+- Use `messages` to inspect recent Freeciv server replies after raw packet or
+  server-command probes.
 - Use `local-view` around active units and cities before scout or tactical
   moves. It exposes terrain/resources and visible units/cities in a compact
   radius.

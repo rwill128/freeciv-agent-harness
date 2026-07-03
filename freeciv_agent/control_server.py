@@ -87,6 +87,7 @@ class PlayerState:
     unit_types: dict[int, dict[str, Any]] = field(default_factory=dict)
     extras: dict[int, dict[str, Any]] = field(default_factory=dict)
     terrains: dict[int, dict[str, Any]] = field(default_factory=dict)
+    recent_messages: list[dict[str, Any]] = field(default_factory=list)
     packet_counts: Counter[int | str] = field(default_factory=Counter)
     last_error: str | None = None
 
@@ -112,6 +113,7 @@ class PlayerState:
             "unit_types": self.unit_types,
             "extras": self.extras,
             "terrains": self.terrains,
+            "recent_messages": self.recent_messages[-20:],
             "packet_counts": dict(self.packet_counts.most_common(20)),
             "last_error": self.last_error,
         }
@@ -215,6 +217,13 @@ class ManagedAgent:
     def brief(self) -> dict[str, Any]:
         with self._lock:
             return self.state.as_brief_json()
+
+    def messages(self, limit: int = 20) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "player": self.name,
+                "messages": self.state.recent_messages[-limit:],
+            }
 
     def local_view(
         self,
@@ -1151,6 +1160,15 @@ class ManagedAgent:
                 actions = dict(packet)
                 self._latest_actions = actions
                 self._actions_condition.notify_all()
+            elif pid in (25, 27, 28):
+                self.state.recent_messages.append(
+                    compact_packet(
+                        packet,
+                        ["pid", "message", "event", "turn", "phase", "conn_id", "tile"],
+                    )
+                )
+                del self.state.recent_messages[:-50]
+                self._state_condition.notify_all()
 
 
 class ControlState:
@@ -1213,6 +1231,14 @@ def make_handler(control: ControlState) -> type[BaseHTTPRequestHandler]:
                     return
                 if len(parts) == 3 and parts[0] == "players" and parts[2] == "brief":
                     self._send_json(control.agent(parts[1]).brief())
+                    return
+                if len(parts) == 3 and parts[0] == "players" and parts[2] == "messages":
+                    query = parse_qs(parsed.query)
+                    self._send_json(
+                        control.agent(parts[1]).messages(
+                            limit=int(query.get("limit", ["20"])[0]),
+                        )
+                    )
                     return
                 if len(parts) == 3 and parts[0] == "players" and parts[2] == "local-view":
                     query = parse_qs(parsed.query)

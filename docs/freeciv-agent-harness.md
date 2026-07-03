@@ -127,6 +127,7 @@ HTTP endpoints currently implemented:
 - `GET /brief`
 - `GET /players/{name}`
 - `GET /players/{name}/brief`
+- `GET /players/{name}/messages`
 - `GET /players/{name}/local-view`
 - `GET /players/{name}/ascii-view`
 - `GET /players/{name}/valid-moves`
@@ -372,6 +373,27 @@ tile packet, and visible units/cities on that tile. Terrain names come from
 not add past sightings, event memory, or recommendations to this view; those
 belong in the agent's own notes and reasoning layer.
 
+### Server Messages
+
+`messages` exposes recent `PACKET_CHAT_MSG` / `PACKET_CONNECT_MSG` payloads
+received by a player control connection. This is primarily a debugging and
+integration probe for Freeciv server replies.
+
+CLI:
+
+```sh
+python3 -m freeciv_agent.control_cli messages AgentA --limit 20
+```
+
+HTTP:
+
+```text
+GET /players/AgentA/messages?limit=20
+```
+
+This is not intended as a strategic memory surface. It is current connection
+message history only, capped in memory.
+
 ### ASCII View
 
 `ascii-view` renders the same current local facts into a deterministic spatial
@@ -461,6 +483,59 @@ The result includes:
 On the current default isometric-hex topology (`topology_id=3`), valid topology
 directions are `0`, `1`, `3`, `4`, `6`, and `7`. Directions `2` and `5` are not
 valid for this topology and are now rejected before sending a move order.
+
+### Native Freeciv Map Images
+
+Freeciv itself supports server-side map image generation through the `mapimg`
+server command. Source references:
+
+- `server/commands.c` defines `mapimg` as an `ALLOW_ADMIN` command.
+- `common/mapimg.c` implements `mapimg define`, `show`, `create`, `delete`, and
+  `colortest`.
+- `common/mapimg.h` defines map layers:
+  - `a` area inside borders
+  - `b` borders
+  - `c` cities
+  - `f` fog of war, single-player images only
+  - `k` player knowledge, single-player images only
+  - `t` terrain
+  - `u` units
+
+Useful map definitions:
+
+```text
+mapimg define zoom=2:map=tfkcub:show=plrid:plrid=0:format=ppm|ppm
+mapimg define zoom=2:map=tfkcub:show=plrid:plrid=1:format=ppm|ppm
+mapimg create 0
+mapimg create 1
+```
+
+`ppm|ppm` uses the built-in PPM writer, so it does not depend on MagickWand.
+PNG/GIF/JPG require a compiled image toolkit. Generated files are written to
+the server save path and named from the save prefix plus the map definition,
+for example `...-M...Z2P000plrid.ppm`.
+
+Live probe result on 2026-07-03:
+
+```sh
+python3 -m freeciv_agent.control_cli packet AgentA \
+  '{"pid":26,"fields":[1],"message":"/mapimg show all"}'
+python3 -m freeciv_agent.control_cli messages AgentA --limit 10
+```
+
+Freeciv replied:
+
+```text
+/mapimg: You are not allowed to use this command.
+```
+
+So native map images are likely the better visual artifact path than macOS
+screenshots, but the current live agent sockets do not have admin command
+access. To use this in the harness, start the server with a console script that
+grants admin/hack access or predefines the needed `mapimg` definitions before
+the game starts. The observed player sockets can send server commands over
+`PACKET_CHAT_MSG_REQ` (`pid=26`) when the `fields` bitvector includes the
+message field.
 
 ### Unit Activity
 

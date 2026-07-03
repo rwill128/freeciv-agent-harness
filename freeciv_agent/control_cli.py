@@ -22,6 +22,10 @@ def main() -> None:
     player_state = subparsers.add_parser("player")
     player_state.add_argument("name")
 
+    messages = subparsers.add_parser("messages")
+    messages.add_argument("name")
+    messages.add_argument("--limit", default=20, type=int)
+
     local_view = subparsers.add_parser("local-view")
     local_view.add_argument("name")
     local_view.add_argument("--unit-id", type=int)
@@ -91,6 +95,12 @@ def main() -> None:
             result = request("GET", f"{args.base_url}/brief")
     elif args.command == "player":
         result = request("GET", f"{args.base_url}/players/{args.name}")
+    elif args.command == "messages":
+        result = request(
+            "GET",
+            f"{args.base_url}/players/{args.name}/messages?"
+            f"{urllib.parse.urlencode({'limit': args.limit})}",
+        )
     elif args.command == "local-view":
         query = {
             "radius": args.radius,
