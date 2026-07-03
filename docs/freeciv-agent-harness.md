@@ -33,7 +33,8 @@ cd "/Users/richardwilliams/Documents/Game AI Science/freeciv-s3_2-agent/build-ag
 ./run.sh freeciv-server --Announce none -p 5560
 ```
 
-The Homebrew GTK client works as the visible observer:
+The Homebrew GTK client works as a visible observer. A global observer is useful
+for debugging, but it is god mode and sees the whole map:
 
 ```sh
 /opt/homebrew/bin/freeciv-gtk4 -a -s 127.0.0.1 -p 5560 -n Observer
@@ -44,6 +45,46 @@ Use the server console to attach it as a global observer:
 ```text
 observe Observer
 ```
+
+For recording actual player fog of war, use player observers instead. Start GUI
+clients with stable connection usernames:
+
+```sh
+/opt/homebrew/bin/freeciv-gtk4 -a -s 127.0.0.1 -p 5560 -n AgentAView
+/opt/homebrew/bin/freeciv-gtk4 -a -s 127.0.0.1 -p 5560 -n Observer
+```
+
+Attach those GUI connections to players from the server console:
+
+```text
+observe AgentAView Matthias
+observe Observer "Valdemar Sejr"
+list connections
+```
+
+Confirmed connection table:
+
+```text
+Observer from localhost (player Valdemar Sejr) (observer) command access level hack
+AgentA from localhost (player Matthias) command access level basic
+AgentB from localhost (player Valdemar Sejr) command access level basic
+AgentAView from localhost (player Matthias) (observer) command access level hack
+```
+
+This produces two visible player-perspective windows:
+
+- `AgentAView`: observes Matthias / AgentA and sees AgentA fog of war.
+- `Observer`: observes Valdemar Sejr / AgentB and sees AgentB fog of war.
+
+The `observe <connection-name> <player-name>` server command takes Freeciv
+connection names and in-game player names. The in-game player name may be the
+leader name chosen by Freeciv, not the JSON agent username. Use `list` or
+`list connections` to confirm the current names.
+
+In the current Homebrew GTK4 setup, starting a third simultaneous GTK client for
+`AgentBView` left disconnected local processes. Reusing the original `Observer`
+window as the AgentB player observer avoided the issue and gave the desired two
+recordable perspectives.
 
 Set civilization AI fill to zero for controlled-player tests:
 

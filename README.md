@@ -15,7 +15,7 @@ cd "/Users/richardwilliams/Documents/Game AI Science/freeciv-s3_2-agent/build-ag
 ./run.sh freeciv-server --Announce none -p 5560
 ```
 
-Start a visible GTK client for recording:
+For an omniscient debugging view, start a visible GTK client:
 
 ```sh
 /opt/homebrew/bin/freeciv-gtk4 -a -s 127.0.0.1 -p 5560 -n Observer
@@ -26,6 +26,25 @@ In the server console, make that GUI connection a global observer:
 ```text
 observe Observer
 ```
+
+For recording actual player perspective with fog of war, attach GUI clients as
+player observers instead of global observers:
+
+```sh
+/opt/homebrew/bin/freeciv-gtk4 -a -s 127.0.0.1 -p 5560 -n AgentAView
+/opt/homebrew/bin/freeciv-gtk4 -a -s 127.0.0.1 -p 5560 -n Observer
+```
+
+Then in the server console:
+
+```text
+observe AgentAView Matthias
+observe Observer "Valdemar Sejr"
+```
+
+`observe <connection> <player>` gives that connection the selected player's map
+visibility rather than god-mode visibility. The player names are the in-game
+leader/player names, not the JSON agent usernames.
 
 Then connect agent clients over JSON:
 

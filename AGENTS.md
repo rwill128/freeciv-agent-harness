@@ -6,7 +6,8 @@ Read `docs/freeciv-agent-harness.md` before changing protocol or runtime code.
 ## Runtime Model
 
 - Freeciv server: JSON-capable S3_2 build, usually on port `5560`.
-- Visible recorder: normal GTK client attached as a global observer.
+- Visible recorder: normal GTK client attached as a player observer when
+  recording fog-of-war perspective; global observer is for debugging only.
 - Controlled players: persistent Python JSON clients owned by
   `freeciv_agent.control_server`.
 - Control surface: local HTTP on `127.0.0.1:8787` plus
@@ -31,5 +32,8 @@ python3 -m freeciv_agent.control_cli phase-done AgentA
 - Unit movement uses `PACKET_UNIT_ORDERS`, not `PACKET_UNIT_DO_ACTION`.
 - Keep the GTK observer path working; this project is for visible recorded
   games, not headless-only play.
+- For player-perspective recordings, use server console commands such as
+  `observe AgentAView Matthias` and `observe Observer "Valdemar Sejr"`; this
+  preserves each player's fog of war.
 - Add new packet IDs, quirks, and verified command shapes to
   `docs/freeciv-agent-harness.md`.
