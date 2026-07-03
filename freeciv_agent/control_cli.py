@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -27,6 +28,10 @@ def main() -> None:
     local_view.add_argument("--city-id", type=int)
     local_view.add_argument("--tile-id", type=int)
     local_view.add_argument("--radius", default=2, type=int)
+
+    valid_moves = subparsers.add_parser("valid-moves")
+    valid_moves.add_argument("name")
+    valid_moves.add_argument("unit_id", type=int)
 
     ready = subparsers.add_parser("ready")
     ready.add_argument("name")
@@ -93,6 +98,12 @@ def main() -> None:
             f"{args.base_url}/players/{args.name}/local-view?"
             f"{urllib.parse.urlencode(query)}",
         )
+    elif args.command == "valid-moves":
+        result = request(
+            "GET",
+            f"{args.base_url}/players/{args.name}/valid-moves?"
+            f"{urllib.parse.urlencode({'unit_id': args.unit_id})}",
+        )
     elif args.command == "ready":
         result = request("POST", f"{args.base_url}/players/{args.name}/ready", {})
     elif args.command == "phase-done":
@@ -155,8 +166,18 @@ def request(method: str, url: str, body: dict[str, Any] | None = None) -> Any:
         data = json.dumps(body).encode()
         headers["content-type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=10) as response:
-        return json.loads(response.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode()
+        try:
+            payload = json.loads(detail)
+        except json.JSONDecodeError:
+            payload = {"error": detail or exc.reason}
+        json.dump(payload, sys.stderr, indent=2, sort_keys=True)
+        print(file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

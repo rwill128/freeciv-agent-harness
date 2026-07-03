@@ -42,6 +42,19 @@ DEFAULT_ACTIVITY_TARGETS = {
     13: "Road",
 }
 
+DIRECTION_NAMES = {
+    0: "northwest",
+    1: "north",
+    2: "northeast",
+    3: "west",
+    4: "east",
+    5: "southwest",
+    6: "south",
+    7: "southeast",
+}
+
+WATER_TERRAINS = {"Lake", "Ocean", "Deep Ocean"}
+
 
 @dataclass
 class PlayerState:
@@ -217,6 +230,48 @@ class ManagedAgent:
                 "center_map": {"x": center_map[0], "y": center_map[1]},
                 "radius": radius,
                 "tiles": tiles,
+            }
+
+    def valid_moves(self, *, unit_id: int) -> dict[str, Any]:
+        with self._lock:
+            unit = self.state.units.get(unit_id)
+            if unit is None or unit.get("owner") != self.state.player_no:
+                raise RuntimeError(f"{self.name} does not own unit {unit_id}")
+            current_tile = unit.get("tile")
+            if current_tile is None:
+                raise RuntimeError(f"{self.name} unit {unit_id} has no known tile")
+            current_map = self._index_to_map_pos(int(current_tile))
+            moves = []
+            for direction in self._valid_directions():
+                target_tile = self._step_tile(int(current_tile), direction)
+                if target_tile is None:
+                    continue
+                dx, dy = self._direction_delta(direction)
+                target_map = self._index_to_map_pos(target_tile)
+                tile = self._local_tile(target_tile, dx, dy)
+                can_enter_known = self._can_unit_enter_known_tile(unit, tile)
+                moves.append(
+                    {
+                        "direction": direction,
+                        "direction_name": DIRECTION_NAMES[direction],
+                        "dx": dx,
+                        "dy": dy,
+                        "target_tile": target_tile,
+                        "target_map": {"x": target_map[0], "y": target_map[1]},
+                        "known": tile["known"],
+                        "can_enter_known": can_enter_known,
+                        "tile": tile,
+                    }
+                )
+            return {
+                "player": self.name,
+                "turn": self.state.turn,
+                "year": self.state.year,
+                "unit": PlayerState._brief_unit(self.state._enrich_unit(unit)),
+                "current_tile": int(current_tile),
+                "current_map": {"x": current_map[0], "y": current_map[1]},
+                "topology_id": self.state.map_info.get("topology_id"),
+                "moves": moves,
             }
 
     def ready(self, is_ready: bool = True) -> dict[str, Any]:
@@ -575,7 +630,7 @@ class ManagedAgent:
         return target_tile
 
     def _direction_to_target(self, src_tile: int, target_tile: int) -> int:
-        for direction in range(8):
+        for direction in self._valid_directions():
             if self._step_tile(src_tile, direction) == target_tile:
                 return direction
         raise RuntimeError(
@@ -583,9 +638,19 @@ class ManagedAgent:
         )
 
     def _step_tile(self, tile: int, direction: int) -> int | None:
+        if direction not in self._valid_directions():
+            raise RuntimeError(
+                f"direction {direction} is not valid for topology "
+                f"{self.state.map_info.get('topology_id')}"
+            )
+        dx, dy = self._direction_delta(direction)
+        map_x, map_y = self._index_to_map_pos(tile)
+        return self._map_pos_to_index(map_x + dx, map_y + dy)
+
+    def _direction_delta(self, direction: int) -> tuple[int, int]:
         if direction < 0 or direction > 7:
             raise RuntimeError(f"direction {direction} is outside 0..7")
-        dx, dy = (
+        return (
             (-1, -1),
             (0, -1),
             (1, -1),
@@ -595,8 +660,33 @@ class ManagedAgent:
             (0, 1),
             (1, 1),
         )[direction]
-        map_x, map_y = self._index_to_map_pos(tile)
-        return self._map_pos_to_index(map_x + dx, map_y + dy)
+
+    def _valid_directions(self) -> list[int]:
+        topology_id = self.state.map_info.get("topology_id", 0)
+        is_iso = bool(topology_id & 1)
+        is_hex = bool(topology_id & 2)
+        if is_iso and is_hex:
+            return [0, 1, 3, 4, 6, 7]
+        if is_hex:
+            return [1, 2, 3, 4, 5, 6]
+        return list(range(8))
+
+    def _can_unit_enter_known_tile(
+        self,
+        unit: dict[str, Any],
+        tile: dict[str, Any],
+    ) -> bool | None:
+        if not tile.get("known"):
+            return None
+        terrain = tile.get("terrain_rule_name")
+        if terrain is None:
+            return None
+        unit_type = self.state.unit_types.get(int(unit["type"])) if "type" in unit else None
+        unit_class_id = unit_type.get("unit_class_id") if unit_type else None
+        is_land_unit = unit_class_id not in (5, 6)
+        if is_land_unit and terrain in WATER_TERRAINS:
+            return False
+        return True
 
     def _index_to_map_pos(self, tile: int) -> tuple[int, int]:
         xsize = self.state.map_info.get("xsize")
@@ -635,7 +725,7 @@ class ManagedAgent:
         return nat_y * xsize + nat_x
 
     def _is_isometric(self) -> bool:
-        return bool(self.state.map_info.get("topology_id", 0) & 3)
+        return bool(self.state.map_info.get("topology_id", 0) & 1)
 
     def _run(self) -> None:
         try:
@@ -946,6 +1036,13 @@ def make_handler(control: ControlState) -> type[BaseHTTPRequestHandler]:
                             radius=int(query.get("radius", ["2"])[0]),
                         )
                     )
+                    return
+                if len(parts) == 3 and parts[0] == "players" and parts[2] == "valid-moves":
+                    query = parse_qs(parsed.query)
+                    unit_id = _optional_int(query, "unit_id")
+                    if unit_id is None:
+                        raise RuntimeError("valid-moves requires unit_id")
+                    self._send_json(control.agent(parts[1]).valid_moves(unit_id=unit_id))
                     return
                 self._send_json({"error": "not found"}, status=404)
             except Exception as exc:

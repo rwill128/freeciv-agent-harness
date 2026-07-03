@@ -128,6 +128,7 @@ HTTP endpoints currently implemented:
 - `GET /players/{name}`
 - `GET /players/{name}/brief`
 - `GET /players/{name}/local-view`
+- `GET /players/{name}/valid-moves`
 - `POST /players/{name}/ready`
 - `POST /players/{name}/phase-done`
 - `POST /players/{name}/found-city`
@@ -366,17 +367,44 @@ tile packet, and visible units/cities on that tile. Terrain names come from
 `PACKET_RULESET_TERRAIN` (`pid=151`); resource names come from
 `PACKET_RULESET_EXTRA` (`pid=232`).
 
-This command exposed two important live-game facts:
+`local-view` is intentionally current-state only. The canonical harness should
+not add past sightings, event memory, or recommendations to this view; those
+belong in the agent's own notes and reasoning layer.
 
-- AgentB Explorer `108` could see AgentA Warrior `120` on turn 7.
-- AgentB retreated the explorer after that contact rather than ending adjacent
-  to the warrior.
+### Valid Moves
 
-Current movement caveat: on the default isometric-hex map, diagonal movement
-directions such as `2` failed even when `local-view` showed known land. Cardinal
-directions `1`, `3`, `4`, and `6` have been used successfully. Future harness
-work should decode Freeciv's valid direction set per topology and surface valid
-move directions directly in `local-view`.
+`valid-moves` exposes current movement options for one unit. It is factual
+current-state data only: it does not encode past sightings, events, memory, or
+recommended moves.
+
+CLI:
+
+```sh
+python3 -m freeciv_agent.control_cli valid-moves AgentB 108
+```
+
+HTTP:
+
+```text
+GET /players/AgentB/valid-moves?unit_id=108
+```
+
+The result includes:
+
+- selected unit id/type/tile/moves
+- current tile/map coordinates
+- topology-valid direction ids and names
+- target tile id and map coordinates
+- target tile terrain/resource/visible unit facts, matching `local-view`
+- `can_enter_known`, a deterministic current-state flag:
+  - `true` when the known target terrain appears enterable by the unit
+  - `false` when known terrain is impassable for the unit, such as land units
+    entering ocean/deep ocean/lake
+  - `null` when the tile is unknown or lacks enough decoded terrain data
+
+On the current default isometric-hex topology (`topology_id=3`), valid topology
+directions are `0`, `1`, `3`, `4`, `6`, and `7`. Directions `2` and `5` are not
+valid for this topology and are now rejected before sending a move order.
 
 ### Unit Activity
 
@@ -485,7 +513,6 @@ Named commands still needed:
 - `set-city-production`
 - `set-research`
 - richer `query-actions` / action availability inspection parsing
-- valid movement direction decoding for isometric-hex topology
 
 Important open design question:
 
