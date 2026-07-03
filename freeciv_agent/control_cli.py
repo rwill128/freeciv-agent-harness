@@ -73,6 +73,13 @@ def main() -> None:
     unit_activity.add_argument("--target")
     unit_activity.add_argument("--wait", default=1.0, type=float)
 
+    set_city_production = subparsers.add_parser("set-city-production")
+    set_city_production.add_argument("name")
+    set_city_production.add_argument("city_id", type=int)
+    set_city_production.add_argument("target")
+    set_city_production.add_argument("--kind", default="unit")
+    set_city_production.add_argument("--wait", default=1.0, type=float)
+
     query_actions = subparsers.add_parser("query-actions")
     query_actions.add_argument("name")
     query_actions.add_argument("unit_id", type=int)
@@ -173,6 +180,18 @@ def main() -> None:
         if args.target is not None:
             body["target"] = args.target
         result = request("POST", f"{args.base_url}/players/{args.name}/unit-activity", body)
+    elif args.command == "set-city-production":
+        body = {
+            "city_id": args.city_id,
+            "target": args.target,
+            "kind": args.kind,
+            "wait": args.wait,
+        }
+        result = request(
+            "POST",
+            f"{args.base_url}/players/{args.name}/set-city-production",
+            body,
+        )
     elif args.command == "query-actions":
         body = {
             "unit_id": args.unit_id,

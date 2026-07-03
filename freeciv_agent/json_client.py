@@ -153,6 +153,23 @@ class FreecivJsonClient:
             }
         )
 
+    def send_city_change(
+        self,
+        *,
+        city_id: int,
+        production_kind: int,
+        production_value: int,
+    ) -> None:
+        self.send_packet(
+            {
+                "pid": 35,
+                "fields": _bitvector_bytes(3, [0, 1, 2]),
+                "city_id": city_id,
+                "production_kind": production_kind,
+                "production_value": production_value,
+            }
+        )
+
     def send_unit_do_action(
         self,
         *,

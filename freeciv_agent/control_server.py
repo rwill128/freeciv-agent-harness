@@ -819,6 +819,55 @@ class ManagedAgent:
             "observed_changed": bool(after and self._unit_changed(before, after)),
         }
 
+    def set_city_production(
+        self,
+        *,
+        city_id: int,
+        target: str | int,
+        kind: str | int | None = None,
+        wait: float = 1.0,
+    ) -> dict[str, Any]:
+        with self._lock:
+            city = self.state.cities.get(city_id)
+            if city is None or city.get("owner") != self.state.player_no:
+                raise RuntimeError(f"{self.name} does not own city {city_id}")
+            before = self.state._enrich_city(city)
+            production_kind, production_value = self._resolve_production_target(target, kind)
+            target_info = self._production_target_info(production_kind, production_value)
+
+        self.client.send_city_change(
+            city_id=city_id,
+            production_kind=production_kind,
+            production_value=production_value,
+        )
+
+        after = self._wait_for_city_update(
+            city_id=city_id,
+            previous=before,
+            wait=wait,
+        )
+        return {
+            "ok": True,
+            "player": self.name,
+            "city_id": city_id,
+            "packet": "PACKET_CITY_CHANGE",
+            "production_kind": production_kind,
+            "production_kind_name": UNIVERSAL_KIND_NAMES.get(
+                production_kind,
+                f"unknown universal kind {production_kind}",
+            ),
+            "production_value": production_value,
+            "production": target_info,
+            "before": PlayerState._brief_city(before),
+            "after": PlayerState._brief_city(after) if after else None,
+            "applied": bool(
+                after
+                and after.get("production_kind") == production_kind
+                and after.get("production_value") == production_value
+            ),
+            "observed_changed": bool(after and self._city_changed(before, after)),
+        }
+
     def query_actions(
         self,
         *,
@@ -905,11 +954,43 @@ class ManagedAgent:
                     return enriched
                 self._state_condition.wait(remaining)
 
+    def _wait_for_city_update(
+        self,
+        *,
+        city_id: int,
+        previous: dict[str, Any],
+        wait: float,
+    ) -> dict[str, Any] | None:
+        deadline = time.monotonic() + wait
+        with self._state_condition:
+            while True:
+                current = self.state.cities.get(city_id)
+                enriched = self.state._enrich_city(current) if current else None
+                if enriched and self._city_changed(previous, enriched):
+                    return enriched
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return enriched
+                self._state_condition.wait(remaining)
+
     @staticmethod
     def _unit_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
         return any(
             before.get(key) != after.get(key)
             for key in ("tile", "movesleft", "hp", "activity", "activity_tgt")
+        )
+
+    @staticmethod
+    def _city_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
+        return any(
+            before.get(key) != after.get(key)
+            for key in (
+                "size",
+                "food_stock",
+                "shield_stock",
+                "production_kind",
+                "production_value",
+            )
         )
 
     def _resolve_activity(self, activity: str | int) -> int:
@@ -941,6 +1022,73 @@ class ManagedAgent:
             if text in names:
                 return extra_id
         raise RuntimeError(f"unknown extra target {target!r}")
+
+    def _resolve_production_target(
+        self,
+        target: str | int,
+        kind: str | int | None,
+    ) -> tuple[int, int]:
+        kind_id = self._resolve_production_kind(kind)
+        if isinstance(target, int):
+            return kind_id, target
+        text = str(target).strip().lower()
+        if text.isdigit():
+            return kind_id, int(text)
+        if kind_id == 6:
+            for unit_type_id, unit_type in self.state.unit_types.items():
+                names = (
+                    str(unit_type.get("name", "")).lower(),
+                    str(unit_type.get("rule_name", "")).lower(),
+                )
+                if text in names:
+                    return kind_id, unit_type_id
+            raise RuntimeError(f"unknown unit production target {target!r}")
+        if kind_id == 3:
+            for building_id, building in self.state.buildings.items():
+                names = (
+                    str(building.get("name", "")).lower(),
+                    str(building.get("rule_name", "")).lower(),
+                )
+                if text in names:
+                    return kind_id, building_id
+            raise RuntimeError(f"unknown building production target {target!r}")
+        raise RuntimeError(
+            f"production kind {kind_id} ({UNIVERSAL_KIND_NAMES.get(kind_id, 'unknown')}) "
+            "is not supported by this command yet"
+        )
+
+    def _resolve_production_kind(self, kind: str | int | None) -> int:
+        if kind is None:
+            return 6
+        if isinstance(kind, int):
+            return kind
+        text = str(kind).strip().lower()
+        if text.isdigit():
+            return int(text)
+        if text in {"unit", "unittype", "unit_type", "units"}:
+            return 6
+        if text in {"building", "improvement", "improvements"}:
+            return 3
+        for kind_id, name in UNIVERSAL_KIND_NAMES.items():
+            if text == name.lower():
+                return kind_id
+        raise RuntimeError(f"unknown production kind {kind!r}")
+
+    def _production_target_info(self, kind_id: int, value_id: int) -> dict[str, Any]:
+        return {
+            "kind_id": kind_id,
+            "kind": UNIVERSAL_KIND_NAMES.get(kind_id, f"unknown universal kind {kind_id}"),
+            "value_id": value_id,
+            **(
+                self.state._production_info(
+                    {
+                        "production_kind": kind_id,
+                        "production_value": value_id,
+                    }
+                )
+                or {}
+            ),
+        }
 
     def _resolve_center_tile(
         self,
@@ -1774,6 +1922,16 @@ def make_handler(control: ControlState) -> type[BaseHTTPRequestHandler]:
                                 unit_id=int(body["unit_id"]),
                                 activity=body["activity"],
                                 target=body.get("target"),
+                                wait=float(body.get("wait", 1.0)),
+                            )
+                        )
+                        return
+                    if command == "set-city-production":
+                        self._send_json(
+                            agent.set_city_production(
+                                city_id=int(body["city_id"]),
+                                target=body["target"],
+                                kind=body.get("kind"),
                                 wait=float(body.get("wait", 1.0)),
                             )
                         )

@@ -136,6 +136,7 @@ HTTP endpoints currently implemented:
 - `POST /players/{name}/found-city`
 - `POST /players/{name}/move-unit`
 - `POST /players/{name}/unit-activity`
+- `POST /players/{name}/set-city-production`
 - `POST /players/{name}/query-actions`
 - `POST /players/{name}/packet`
 
@@ -695,12 +696,60 @@ the GTK observer:
     `118` stayed as the city garrison.
   - AgentB produced Warrior `121` at Beta by turn 8.
   - The game advanced to turn 8 / year `-3650`.
+- Turns 10 through 12 were played manually with the LLM in the decision loop
+  after adding production control:
+  - `set-city-production` was verified for both players by switching Alpha
+    `116` and Beta `117` from Warriors to Workers.
+  - Both production changes returned `applied=true` and later turn transitions
+    preserved Worker production.
+  - AgentA moved Explorer `105` through the northern land/ice edge to tile
+    `380`, moved Warrior `120` onto AgentB-owned gold mountain tile `534`, and
+    moved Warrior `122` behind it to tile `499`.
+  - AgentB moved Explorer `108` through the northwestern hills to tile `390`
+    and Warrior `121` east/southeast to tile `85`.
+  - Hostile/foreign-owned tile movement is accepted by the current interface:
+    AgentA Warrior `120` successfully moved onto AgentB-owned tile `534`.
+  - The game advanced to turn 13 / year `-3400`.
+  - Current turn-13 city state: Alpha is size `1`, food `12`, shields `18/20`
+    toward Workers; Beta is size `2`, food `14`, shields `16/20` toward
+    Workers.
+
+## Production Control
+
+`set-city-production` changes a city's current build target with decoded,
+LLM-facing names:
+
+```bash
+python3 -m freeciv_agent.control_cli set-city-production AgentA 116 Workers --kind unit
+```
+
+REST equivalent:
+
+```http
+POST /players/AgentA/set-city-production
+```
+
+```json
+{
+  "city_id": 116,
+  "target": "Workers",
+  "kind": "unit",
+  "wait": 1.0
+}
+```
+
+The command sends `PACKET_CITY_CHANGE` (`pid=35`) and accepts production
+targets by numeric ID, `name`, or `rule_name`. `kind` defaults to `unit`;
+`unit`, `UnitType`, and `6` resolve to Freeciv universal kind `UnitType`.
+`building`, `Building`, and `3` resolve to Freeciv universal kind `Building`.
+
+The response includes the raw IDs plus decoded `production` facts, and includes
+`before`, `after`, `applied`, and `observed_changed` fields.
 
 ## Current Gaps
 
 Named commands still needed:
 
-- `set-city-production`
 - `set-research`
 - richer `query-actions` / action availability inspection parsing
 
