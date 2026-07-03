@@ -19,6 +19,7 @@ Read `docs/freeciv-agent-harness.md` before changing protocol or runtime code.
 python3 -m freeciv_agent.control_server --players AgentA AgentB
 python3 -m freeciv_agent.control_cli state
 python3 -m freeciv_agent.control_cli brief
+python3 -m freeciv_agent.control_cli local-view AgentA --unit-id 105 --radius 2
 python3 -m freeciv_agent.control_cli found-city AgentA --city-name Alpha
 python3 -m freeciv_agent.control_cli move-unit AgentA 105 --dx 1
 python3 -m freeciv_agent.control_cli move-unit AgentA 105 --direction 4
@@ -38,8 +39,14 @@ python3 -m freeciv_agent.control_cli phase-done AgentA
   activity unless an LLM-facing workflow clearly needs a semantic shortcut.
 - `brief` is the preferred state read for an LLM agent turn; `state` is the
   full debugging payload.
+- Use `local-view` around active units and cities before scout or tactical
+  moves. It exposes terrain/resources and visible units/cities in a compact
+  radius.
 - `move-unit` reports observed `before`/`after` state plus `applied`, not just
   that the packet was sent.
+- On the current isometric-hex map, diagonal movement directions such as `2`
+  have failed even when the target tile was known land. Prefer cardinal
+  directions until valid direction handling is decoded.
 - Keep the GTK observer path working; this project is for visible recorded
   games, not headless-only play.
 - For player-perspective recordings, use server console commands such as

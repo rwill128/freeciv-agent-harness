@@ -127,6 +127,7 @@ HTTP endpoints currently implemented:
 - `GET /brief`
 - `GET /players/{name}`
 - `GET /players/{name}/brief`
+- `GET /players/{name}/local-view`
 - `POST /players/{name}/ready`
 - `POST /players/{name}/phase-done`
 - `POST /players/{name}/found-city`
@@ -339,6 +340,44 @@ If Freeciv accepts but does not immediately apply an order, `applied` will be
 false and `after` reflects the last observed state. Agents should inspect this
 instead of assuming every sent command changed the game.
 
+### Local View
+
+`local-view` returns a compact radius around a controlled unit, city, or tile.
+This is the main LLM-facing map inspection command discovered during live
+turn-5 through turn-7 play.
+
+CLI examples:
+
+```sh
+python3 -m freeciv_agent.control_cli local-view AgentA --unit-id 105 --radius 2
+python3 -m freeciv_agent.control_cli local-view AgentB --city-id 117 --radius 2
+python3 -m freeciv_agent.control_cli local-view AgentB --tile-id 499 --radius 1
+```
+
+HTTP example:
+
+```text
+GET /players/AgentB/local-view?unit_id=108&radius=2
+```
+
+Each tile entry includes relative `dx`/`dy`, tile id, known status,
+terrain/resource ids and decoded names when known, owner/worked fields from the
+tile packet, and visible units/cities on that tile. Terrain names come from
+`PACKET_RULESET_TERRAIN` (`pid=151`); resource names come from
+`PACKET_RULESET_EXTRA` (`pid=232`).
+
+This command exposed two important live-game facts:
+
+- AgentB Explorer `108` could see AgentA Warrior `120` on turn 7.
+- AgentB retreated the explorer after that contact rather than ending adjacent
+  to the warrior.
+
+Current movement caveat: on the default isometric-hex map, diagonal movement
+directions such as `2` failed even when `local-view` showed known land. Cardinal
+directions `1`, `3`, `4`, and `6` have been used successfully. Future harness
+work should decode Freeciv's valid direction set per topology and surface valid
+move directions directly in `local-view`.
+
 ### Unit Activity
 
 Worker tasks such as road, irrigate, and mine use
@@ -427,6 +466,17 @@ the GTK observer:
   - AgentB Explorer scouted to tile `479`; Worker and Diplomat pulled back to
     tile `551`; Beta produced Warrior `119`.
   - Explicit phase-done commands advanced both players to turn 5 / year `-3800`.
+- Turn 5 through turn 7 were played manually with the LLM in the decision loop:
+  - AgentA Worker `103` and AgentB Worker `106` started mining via
+    `unit-activity`.
+  - AgentA Explorer `105` scouted north along a coastal land pocket and reached
+    tile `363` by turn 8.
+  - AgentB Explorer `108` scouted north/east, made visual contact with AgentA
+    Warrior `120`, then retreated south to tile `517`.
+  - AgentA Warrior `120` moved south from Alpha to tile `464`; AgentA Warrior
+    `118` stayed as the city garrison.
+  - AgentB produced Warrior `121` at Beta by turn 8.
+  - The game advanced to turn 8 / year `-3650`.
 
 ## Current Gaps
 
@@ -435,6 +485,7 @@ Named commands still needed:
 - `set-city-production`
 - `set-research`
 - richer `query-actions` / action availability inspection parsing
+- valid movement direction decoding for isometric-hex topology
 
 Important open design question:
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -19,6 +20,13 @@ def main() -> None:
 
     player_state = subparsers.add_parser("player")
     player_state.add_argument("name")
+
+    local_view = subparsers.add_parser("local-view")
+    local_view.add_argument("name")
+    local_view.add_argument("--unit-id", type=int)
+    local_view.add_argument("--city-id", type=int)
+    local_view.add_argument("--tile-id", type=int)
+    local_view.add_argument("--radius", default=2, type=int)
 
     ready = subparsers.add_parser("ready")
     ready.add_argument("name")
@@ -70,6 +78,21 @@ def main() -> None:
             result = request("GET", f"{args.base_url}/brief")
     elif args.command == "player":
         result = request("GET", f"{args.base_url}/players/{args.name}")
+    elif args.command == "local-view":
+        query = {
+            "radius": args.radius,
+        }
+        if args.unit_id is not None:
+            query["unit_id"] = args.unit_id
+        if args.city_id is not None:
+            query["city_id"] = args.city_id
+        if args.tile_id is not None:
+            query["tile_id"] = args.tile_id
+        result = request(
+            "GET",
+            f"{args.base_url}/players/{args.name}/local-view?"
+            f"{urllib.parse.urlencode(query)}",
+        )
     elif args.command == "ready":
         result = request("POST", f"{args.base_url}/players/{args.name}/ready", {})
     elif args.command == "phase-done":

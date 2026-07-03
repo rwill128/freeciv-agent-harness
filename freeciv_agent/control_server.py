@@ -9,7 +9,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .json_client import FreecivJsonClient
 
@@ -57,6 +57,7 @@ class PlayerState:
     cities: dict[int, dict[str, Any]] = field(default_factory=dict)
     unit_types: dict[int, dict[str, Any]] = field(default_factory=dict)
     extras: dict[int, dict[str, Any]] = field(default_factory=dict)
+    terrains: dict[int, dict[str, Any]] = field(default_factory=dict)
     packet_counts: Counter[int | str] = field(default_factory=Counter)
     last_error: str | None = None
 
@@ -81,6 +82,7 @@ class PlayerState:
             "cities": owned_cities,
             "unit_types": self.unit_types,
             "extras": self.extras,
+            "terrains": self.terrains,
             "packet_counts": dict(self.packet_counts.most_common(20)),
             "last_error": self.last_error,
         }
@@ -130,6 +132,7 @@ class PlayerState:
             unit,
             [
                 "id",
+                "owner",
                 "type",
                 "type_name",
                 "type_rule_name",
@@ -183,6 +186,38 @@ class ManagedAgent:
     def brief(self) -> dict[str, Any]:
         with self._lock:
             return self.state.as_brief_json()
+
+    def local_view(
+        self,
+        *,
+        unit_id: int | None = None,
+        city_id: int | None = None,
+        tile_id: int | None = None,
+        radius: int = 2,
+    ) -> dict[str, Any]:
+        with self._lock:
+            center_tile = self._resolve_center_tile(
+                unit_id=unit_id,
+                city_id=city_id,
+                tile_id=tile_id,
+            )
+            center_map = self._index_to_map_pos(center_tile)
+            tiles = []
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    target_tile = self._map_pos_to_index(center_map[0] + dx, center_map[1] + dy)
+                    if target_tile is None:
+                        continue
+                    tiles.append(self._local_tile(target_tile, dx, dy))
+            return {
+                "player": self.name,
+                "turn": self.state.turn,
+                "year": self.state.year,
+                "center_tile": center_tile,
+                "center_map": {"x": center_map[0], "y": center_map[1]},
+                "radius": radius,
+                "tiles": tiles,
+            }
 
     def ready(self, is_ready: bool = True) -> dict[str, Any]:
         with self._lock:
@@ -467,6 +502,69 @@ class ManagedAgent:
                 return extra_id
         raise RuntimeError(f"unknown extra target {target!r}")
 
+    def _resolve_center_tile(
+        self,
+        *,
+        unit_id: int | None,
+        city_id: int | None,
+        tile_id: int | None,
+    ) -> int:
+        selectors = [value is not None for value in (unit_id, city_id, tile_id)]
+        if sum(selectors) != 1:
+            raise RuntimeError("provide exactly one of unit_id, city_id, or tile_id")
+        if unit_id is not None:
+            unit = self.state.units.get(unit_id)
+            if unit is None or unit.get("owner") != self.state.player_no:
+                raise RuntimeError(f"{self.name} does not own unit {unit_id}")
+            if unit.get("tile") is None:
+                raise RuntimeError(f"{self.name} unit {unit_id} has no known tile")
+            return int(unit["tile"])
+        if city_id is not None:
+            city = self.state.cities.get(city_id)
+            if city is None or city.get("owner") != self.state.player_no:
+                raise RuntimeError(f"{self.name} does not own city {city_id}")
+            if city.get("tile") is None:
+                raise RuntimeError(f"{self.name} city {city_id} has no known tile")
+            return int(city["tile"])
+        if tile_id is None:
+            raise AssertionError("tile_id unexpectedly absent")
+        return tile_id
+
+    def _local_tile(self, tile_id: int, dx: int, dy: int) -> dict[str, Any]:
+        tile = self.state.tiles.get(tile_id, {})
+        result: dict[str, Any] = {
+            "tile": tile_id,
+            "dx": dx,
+            "dy": dy,
+            "known": bool(tile),
+        }
+        result.update(compact_packet(tile, ["terrain", "resource", "owner", "worked", "label"]))
+        terrain = self.state.terrains.get(int(tile["terrain"])) if "terrain" in tile else None
+        if terrain is not None:
+            result["terrain_name"] = terrain.get("name")
+            result["terrain_rule_name"] = terrain.get("rule_name")
+            result["movement_cost"] = terrain.get("movement_cost")
+            result["defense_bonus"] = terrain.get("defense_bonus")
+        resource = self.state.extras.get(int(tile["resource"])) if "resource" in tile else None
+        if resource is not None:
+            result["resource_name"] = resource.get("name")
+            result["resource_rule_name"] = resource.get("rule_name")
+        units = [
+            PlayerState._brief_unit(self.state._enrich_unit(unit))
+            for unit in self.state.units.values()
+            if unit.get("tile") == tile_id
+        ]
+        cities = [
+            PlayerState._brief_city(city)
+            for city in self.state.cities.values()
+            if city.get("tile") == tile_id
+        ]
+        if units:
+            result["units"] = units
+        if cities:
+            result["cities"] = cities
+        return result
+
     def _relative_tile(self, tile: int, dx: int, dy: int) -> int:
         map_x, map_y = self._index_to_map_pos(tile)
         target_tile = self._map_pos_to_index(map_x + dx, map_y + dy)
@@ -631,6 +729,32 @@ class ManagedAgent:
                     ],
                 )
                 self._state_condition.notify_all()
+            elif pid == 151 and "id" in packet:
+                terrain_id = int(packet["id"])
+                self.state.terrains[terrain_id] = compact_packet(
+                    packet,
+                    [
+                        "id",
+                        "name",
+                        "rule_name",
+                        "tclass",
+                        "movement_cost",
+                        "defense_bonus",
+                        "output",
+                        "resources",
+                        "base_time",
+                        "road_time",
+                        "cultivate_result",
+                        "cultivate_time",
+                        "irrigation_food_incr",
+                        "irrigation_time",
+                        "mining_shield_incr",
+                        "mining_time",
+                        "transform_result",
+                        "transform_time",
+                    ],
+                )
+                self._state_condition.notify_all()
             elif pid == 232 and "id" in packet:
                 extra_id = int(packet["id"])
                 self.state.extras[extra_id] = compact_packet(
@@ -787,6 +911,13 @@ def compact_packet(packet: dict[str, Any], keys: list[str]) -> dict[str, Any]:
     return {key: packet[key] for key in keys if key in packet}
 
 
+def _optional_int(query: dict[str, list[str]], key: str) -> int | None:
+    values = query.get(key)
+    if not values or values[0] == "":
+        return None
+    return int(values[0])
+
+
 def make_handler(control: ControlState) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -804,6 +935,17 @@ def make_handler(control: ControlState) -> type[BaseHTTPRequestHandler]:
                     return
                 if len(parts) == 3 and parts[0] == "players" and parts[2] == "brief":
                     self._send_json(control.agent(parts[1]).brief())
+                    return
+                if len(parts) == 3 and parts[0] == "players" and parts[2] == "local-view":
+                    query = parse_qs(parsed.query)
+                    self._send_json(
+                        control.agent(parts[1]).local_view(
+                            unit_id=_optional_int(query, "unit_id"),
+                            city_id=_optional_int(query, "city_id"),
+                            tile_id=_optional_int(query, "tile_id"),
+                            radius=int(query.get("radius", ["2"])[0]),
+                        )
+                    )
                     return
                 self._send_json({"error": "not found"}, status=404)
             except Exception as exc:
