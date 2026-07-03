@@ -29,6 +29,14 @@ def main() -> None:
     local_view.add_argument("--tile-id", type=int)
     local_view.add_argument("--radius", default=2, type=int)
 
+    ascii_view = subparsers.add_parser("ascii-view")
+    ascii_view.add_argument("name")
+    ascii_view.add_argument("--unit-id", type=int)
+    ascii_view.add_argument("--city-id", type=int)
+    ascii_view.add_argument("--tile-id", type=int)
+    ascii_view.add_argument("--radius", default=3, type=int)
+    ascii_view.add_argument("--text", action="store_true")
+
     valid_moves = subparsers.add_parser("valid-moves")
     valid_moves.add_argument("name")
     valid_moves.add_argument("unit_id", type=int)
@@ -98,6 +106,24 @@ def main() -> None:
             f"{args.base_url}/players/{args.name}/local-view?"
             f"{urllib.parse.urlencode(query)}",
         )
+    elif args.command == "ascii-view":
+        query = {
+            "radius": args.radius,
+        }
+        if args.unit_id is not None:
+            query["unit_id"] = args.unit_id
+        if args.city_id is not None:
+            query["city_id"] = args.city_id
+        if args.tile_id is not None:
+            query["tile_id"] = args.tile_id
+        result = request(
+            "GET",
+            f"{args.base_url}/players/{args.name}/ascii-view?"
+            f"{urllib.parse.urlencode(query)}",
+        )
+        if args.text:
+            print(result["text"])
+            return
     elif args.command == "valid-moves":
         result = request(
             "GET",

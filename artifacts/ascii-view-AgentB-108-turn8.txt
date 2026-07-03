@@ -1,0 +1,31 @@
+freeciv-agent-ascii-view-v1
+player=AgentB turn=8 year=-3650 center=unit:108 tile=517 map=(27,19) radius=3 topology_id=3
+cell=terrain+marker; rows=dy relative to center; columns=dx relative to center
+terrain: ? unknown, ~=water, a=arctic, d=desert, f=forest, g=grassland, h=hills, j=jungle, m=mountains, p=plains, s=swamp, t=tundra
+marker: .=none, uppercase=own unit, lowercase=other unit, @=own city, &=other city, *=multiple visible entities
+
+      -3 -2 -1 +0 +1 +2 +3
+ -3  ~. ~. ~. p. ~. ?? ??
+ -2  m. ~. j. g. ~. ~. ??
+ -1  h. m. d. j. ~. ~. ??
+ +0  d. h. h. dE p. ~. ??
+ +1  m. p. g. m. ~. ~. ??
+ +2  p. h. h. m. m. ~. ??
+ +3  s. p. h* g* s. f. ??
+
+details:
+  dx=-2 dy=-2 tile=445 map=(25,17) terrain=Ocean resource=Fish
+  dx=+0 dy=+0 tile=517 map=(27,19) terrain=Desert units=[Explorer#108 owner=self hp=10 moves=6]
+  dx=-2 dy=+1 tile=497 map=(25,20) terrain=Plains owner=self
+  dx=-1 dy=+1 tile=516 map=(26,20) terrain=Grassland owner=self
+  dx=+0 dy=+1 tile=534 map=(27,20) terrain=Mountains resource=Gold owner=self
+  dx=+2 dy=+1 tile=571 map=(29,20) terrain=Ocean resource=Fish
+  dx=-2 dy=+2 tile=515 map=(25,21) terrain=Hills owner=self
+  dx=-1 dy=+2 tile=533 map=(26,21) terrain=Hills resource=Coal owner=self
+  dx=+0 dy=+2 tile=552 map=(27,21) terrain=Mountains owner=self
+  dx=+1 dy=+2 tile=570 map=(28,21) terrain=Mountains owner=self
+  dx=-2 dy=+3 tile=532 map=(25,22) terrain=Plains owner=self
+  dx=-1 dy=+3 tile=551 map=(26,22) terrain=Hills owner=self units=[Diplomat#107 owner=self hp=10 moves=12, Workers#106 owner=self hp=10 moves=6]
+  dx=+0 dy=+3 tile=569 map=(27,22) terrain=Grassland owner=self cities=[Beta#117] units=[Warriors#121 owner=self hp=10 moves=6, Warriors#119 owner=self hp=10 moves=6]
+  dx=+1 dy=+3 tile=588 map=(28,22) terrain=Swamp owner=self
+  dx=+2 dy=+3 tile=606 map=(29,22) terrain=Forest resource=Pheasant owner=self

@@ -20,6 +20,7 @@ python3 -m freeciv_agent.control_server --players AgentA AgentB
 python3 -m freeciv_agent.control_cli state
 python3 -m freeciv_agent.control_cli brief
 python3 -m freeciv_agent.control_cli local-view AgentA --unit-id 105 --radius 2
+python3 -m freeciv_agent.control_cli ascii-view AgentA --unit-id 105 --radius 3 --text
 python3 -m freeciv_agent.control_cli valid-moves AgentA 105
 python3 -m freeciv_agent.control_cli found-city AgentA --city-name Alpha
 python3 -m freeciv_agent.control_cli move-unit AgentA 105 --dx 1
@@ -43,6 +44,8 @@ python3 -m freeciv_agent.control_cli phase-done AgentA
 - Use `local-view` around active units and cities before scout or tactical
   moves. It exposes terrain/resources and visible units/cities in a compact
   radius.
+- Use `ascii-view --text` when an agent needs the same local facts as a stable
+  spatial prompt artifact. It is a rendering of current state only.
 - Use `valid-moves` before moving a unit. It exposes current legal topology
   directions and known target terrain, without recording history or making
   recommendations.

@@ -128,6 +128,7 @@ HTTP endpoints currently implemented:
 - `GET /players/{name}`
 - `GET /players/{name}/brief`
 - `GET /players/{name}/local-view`
+- `GET /players/{name}/ascii-view`
 - `GET /players/{name}/valid-moves`
 - `POST /players/{name}/ready`
 - `POST /players/{name}/phase-done`
@@ -370,6 +371,61 @@ tile packet, and visible units/cities on that tile. Terrain names come from
 `local-view` is intentionally current-state only. The canonical harness should
 not add past sightings, event memory, or recommendations to this view; those
 belong in the agent's own notes and reasoning layer.
+
+### ASCII View
+
+`ascii-view` renders the same current local facts into a deterministic spatial
+prompt artifact. It is a presentation layer over current state only: it should
+not contain memories, recommendations, inferred intentions, or suggested next
+inspections.
+
+CLI:
+
+```sh
+python3 -m freeciv_agent.control_cli ascii-view AgentB --unit-id 108 --radius 3 --text
+```
+
+HTTP:
+
+```text
+GET /players/AgentB/ascii-view?unit_id=108&radius=3
+```
+
+The JSON response includes `format=freeciv-agent-ascii-view-v1` and a `text`
+field. The CLI `--text` flag prints only that text field.
+
+Format v1 uses two-character cells:
+
+- first character: terrain code
+- second character: visible marker
+
+Terrain codes:
+
+- `?` unknown
+- `~` water
+- `a` arctic
+- `d` desert
+- `f` forest
+- `g` grassland
+- `h` hills
+- `j` jungle
+- `m` mountains
+- `p` plains
+- `s` swamp
+- `t` tundra
+
+Visible markers:
+
+- `.` no visible entity
+- uppercase letter: own unit, based on unit type
+- lowercase letter: other visible unit, based on unit type
+- `@` own city
+- `&` other city
+- `*` multiple visible units/cities on the tile
+
+The grid rows are `dy` offsets and columns are `dx` offsets relative to the
+center tile in the same map-coordinate system used by `local-view`. Resource,
+owner, city, and unit details are listed after the grid for notable tiles.
 
 ### Valid Moves
 

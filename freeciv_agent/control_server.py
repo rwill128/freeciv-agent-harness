@@ -55,6 +55,22 @@ DIRECTION_NAMES = {
 
 WATER_TERRAINS = {"Lake", "Ocean", "Deep Ocean"}
 
+TERRAIN_ASCII = {
+    "Arctic": "a",
+    "Desert": "d",
+    "Forest": "f",
+    "Grassland": "g",
+    "Hills": "h",
+    "Jungle": "j",
+    "Lake": "~",
+    "Mountains": "m",
+    "Ocean": "~",
+    "Deep Ocean": "~",
+    "Plains": "p",
+    "Swamp": "s",
+    "Tundra": "t",
+}
+
 
 @dataclass
 class PlayerState:
@@ -231,6 +247,39 @@ class ManagedAgent:
                 "radius": radius,
                 "tiles": tiles,
             }
+
+    def ascii_view(
+        self,
+        *,
+        unit_id: int | None = None,
+        city_id: int | None = None,
+        tile_id: int | None = None,
+        radius: int = 3,
+    ) -> dict[str, Any]:
+        view = self.local_view(
+            unit_id=unit_id,
+            city_id=city_id,
+            tile_id=tile_id,
+            radius=radius,
+        )
+        with self._lock:
+            text = self._render_ascii_view(
+                view,
+                unit_id=unit_id,
+                city_id=city_id,
+                tile_id=tile_id,
+            )
+        return {
+            "player": view["player"],
+            "turn": view["turn"],
+            "year": view["year"],
+            "center_tile": view["center_tile"],
+            "center_map": view["center_map"],
+            "radius": view["radius"],
+            "topology_id": self.state.map_info.get("topology_id"),
+            "format": "freeciv-agent-ascii-view-v1",
+            "text": text,
+        }
 
     def valid_moves(self, *, unit_id: int) -> dict[str, Any]:
         with self._lock:
@@ -619,6 +668,145 @@ class ManagedAgent:
         if cities:
             result["cities"] = cities
         return result
+
+    def _render_ascii_view(
+        self,
+        view: dict[str, Any],
+        *,
+        unit_id: int | None,
+        city_id: int | None,
+        tile_id: int | None,
+    ) -> str:
+        radius = int(view["radius"])
+        center_map = view["center_map"]
+        tiles_by_delta = {
+            (int(tile["dx"]), int(tile["dy"])): tile
+            for tile in view["tiles"]
+        }
+        selector = "tile"
+        selector_id = view["center_tile"]
+        if unit_id is not None:
+            selector = "unit"
+            selector_id = unit_id
+        elif city_id is not None:
+            selector = "city"
+            selector_id = city_id
+        elif tile_id is not None:
+            selector = "tile"
+            selector_id = tile_id
+
+        lines = [
+            "freeciv-agent-ascii-view-v1",
+            (
+                f"player={self.name} turn={view['turn']} year={view['year']} "
+                f"center={selector}:{selector_id} tile={view['center_tile']} "
+                f"map=({center_map['x']},{center_map['y']}) radius={radius} "
+                f"topology_id={self.state.map_info.get('topology_id')}"
+            ),
+            "cell=terrain+marker; rows=dy relative to center; columns=dx relative to center",
+            (
+                "terrain: ? unknown, ~=water, a=arctic, d=desert, f=forest, "
+                "g=grassland, h=hills, j=jungle, m=mountains, p=plains, "
+                "s=swamp, t=tundra"
+            ),
+            (
+                "marker: .=none, uppercase=own unit, lowercase=other unit, "
+                "@=own city, &=other city, *=multiple visible entities"
+            ),
+            "",
+            "      " + " ".join(f"{dx:+2d}" for dx in range(-radius, radius + 1)),
+        ]
+
+        for dy in range(-radius, radius + 1):
+            row = [f"{dy:+3d} "]
+            for dx in range(-radius, radius + 1):
+                tile = tiles_by_delta.get((dx, dy))
+                row.append(self._ascii_cell(tile))
+            lines.append(" ".join(row))
+
+        notable_lines = self._ascii_notable_lines(view["tiles"])
+        if notable_lines:
+            lines.extend(["", "details:"])
+            lines.extend(notable_lines)
+        return "\n".join(lines)
+
+    def _ascii_cell(self, tile: dict[str, Any] | None) -> str:
+        if tile is None or not tile.get("known"):
+            return "??"
+        terrain = TERRAIN_ASCII.get(str(tile.get("terrain_rule_name")), "?")
+        marker = self._ascii_marker(tile)
+        return f"{terrain}{marker}"
+
+    def _ascii_marker(self, tile: dict[str, Any]) -> str:
+        units = tile.get("units", [])
+        cities = tile.get("cities", [])
+        if len(units) + len(cities) > 1:
+            return "*"
+        if cities:
+            return "@" if tile.get("owner") == self.state.player_no else "&"
+        if units:
+            return self._ascii_unit_marker(units[0])
+        return "."
+
+    def _ascii_unit_marker(self, unit: dict[str, Any]) -> str:
+        rule_name = str(unit.get("type_rule_name") or unit.get("type_name") or "Unit")
+        marker = next((char for char in rule_name if char.isalpha()), "U")
+        if unit.get("owner") == self.state.player_no:
+            return marker.upper()
+        return marker.lower()
+
+    def _ascii_notable_lines(self, tiles: list[dict[str, Any]]) -> list[str]:
+        lines = []
+        for tile in sorted(tiles, key=lambda item: (item["dy"], item["dx"], item["tile"])):
+            if not tile.get("known"):
+                continue
+            notable = (
+                tile.get("units")
+                or tile.get("cities")
+                or tile.get("resource_name")
+                or tile.get("owner") == self.state.player_no
+            )
+            if not notable:
+                continue
+            map_x, map_y = self._index_to_map_pos(int(tile["tile"]))
+            parts = [
+                f"dx={tile['dx']:+d}",
+                f"dy={tile['dy']:+d}",
+                f"tile={tile['tile']}",
+                f"map=({map_x},{map_y})",
+                f"terrain={tile.get('terrain_rule_name', 'unknown')}",
+            ]
+            if "resource_name" in tile:
+                parts.append(f"resource={tile['resource_name']}")
+            if tile.get("owner") == self.state.player_no:
+                parts.append("owner=self")
+            elif tile.get("owner") not in (None, 65535):
+                parts.append(f"owner={tile['owner']}")
+            if tile.get("cities"):
+                parts.append(
+                    "cities=["
+                    + ", ".join(
+                        f"{city.get('name')}#{city.get('id')}"
+                        for city in tile["cities"]
+                    )
+                    + "]"
+                )
+            if tile.get("units"):
+                parts.append(
+                    "units=["
+                    + ", ".join(self._ascii_unit_detail(unit) for unit in tile["units"])
+                    + "]"
+                )
+            lines.append("  " + " ".join(parts))
+        return lines
+
+    def _ascii_unit_detail(self, unit: dict[str, Any]) -> str:
+        owner = "self" if unit.get("owner") == self.state.player_no else str(unit.get("owner"))
+        type_name = unit.get("type_rule_name") or unit.get("type_name") or "Unit"
+        return (
+            f"{type_name}#{unit.get('id')} owner={owner} "
+            f"hp={unit.get('hp')} moves={unit.get('movesleft')}"
+        )
 
     def _relative_tile(self, tile: int, dx: int, dy: int) -> int:
         map_x, map_y = self._index_to_map_pos(tile)
@@ -1034,6 +1222,17 @@ def make_handler(control: ControlState) -> type[BaseHTTPRequestHandler]:
                             city_id=_optional_int(query, "city_id"),
                             tile_id=_optional_int(query, "tile_id"),
                             radius=int(query.get("radius", ["2"])[0]),
+                        )
+                    )
+                    return
+                if len(parts) == 3 and parts[0] == "players" and parts[2] == "ascii-view":
+                    query = parse_qs(parsed.query)
+                    self._send_json(
+                        control.agent(parts[1]).ascii_view(
+                            unit_id=_optional_int(query, "unit_id"),
+                            city_id=_optional_int(query, "city_id"),
+                            tile_id=_optional_int(query, "tile_id"),
+                            radius=int(query.get("radius", ["3"])[0]),
                         )
                     )
                     return
