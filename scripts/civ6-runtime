@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+APP_PATH="${HOME}/Library/Application Support/Steam/steamapps/common/Sid Meier's Civilization VI/Civ6.app"
+SUPPORT_ROOT="${HOME}/Library/Application Support/Sid Meier's Civilization VI/Firaxis Games/Sid Meier's Civilization VI"
+APP_OPTIONS="${SUPPORT_ROOT}/AppOptions.txt"
+MODS_DIR="${SUPPORT_ROOT}/Mods"
+
+usage() {
+  cat <<EOF
+Usage: $0 <command>
+
+Commands:
+  setup       Install the bridge mod and set debug/no-audio options.
+  launch      Open Civ 6 through the installed Steam app bundle.
+  status      Print bridge install/log status.
+  enable-mod  Enable the bridge after Civ 6 has scanned it.
+  wait-state  Wait for the bridge to emit a Lua.log state record.
+  command     Print the latest bridge command-result record.
+  log         Tail Lua.log.
+
+Typical first run:
+  $0 setup
+  $0 launch
+  $0 status
+EOF
+}
+
+set_option() {
+  local key="$1"
+  local value="$2"
+  if [[ ! -f "${APP_OPTIONS}" ]]; then
+    echo "Missing AppOptions.txt: ${APP_OPTIONS}" >&2
+    return 1
+  fi
+  if grep -qE "^${key}[[:space:]]+" "${APP_OPTIONS}"; then
+    perl -0pi -e "s/^${key}\\s+.*$/${key} ${value}/mg" "${APP_OPTIONS}"
+  else
+    printf '\n%s %s\n' "${key}" "${value}" >> "${APP_OPTIONS}"
+  fi
+}
+
+detected_app_path() {
+  "${SCRIPT_DIR}/civ6-bridge" status --json | python3 -c 'import json,sys; print((json.load(sys.stdin).get("app_path") or ""))'
+}
+
+command="${1:-}"
+case "${command}" in
+  setup)
+    mkdir -p "${MODS_DIR}"
+    "${SCRIPT_DIR}/install-civ6-bridge-mod"
+    set_option EnableTuner 1
+    set_option EnableDebugMenu 1
+    set_option EnableAudio 0
+    "${SCRIPT_DIR}/civ6-bridge" status
+    ;;
+  launch)
+    open "steam://run/289070" || {
+      detected_path="$(detected_app_path)"
+      if [[ -z "${detected_path}" ]]; then
+        detected_path="${APP_PATH}"
+      fi
+      if [[ ! -d "${detected_path}" ]]; then
+        echo "Civ 6 app not found: ${detected_path}" >&2
+        exit 1
+      fi
+      open "${detected_path}"
+    }
+    echo "Requested Civ 6 launch through Steam app id 289070"
+    ;;
+  status)
+    "${SCRIPT_DIR}/civ6-bridge" status
+    ;;
+  enable-mod)
+    "${SCRIPT_DIR}/civ6-bridge" enable-bridge
+    ;;
+  wait-state)
+    "${SCRIPT_DIR}/civ6-bridge" wait-state --pretty --timeout "${2:-300}"
+    ;;
+  command)
+    "${SCRIPT_DIR}/civ6-bridge" latest-command --pretty
+    ;;
+  log)
+    log_path="${SUPPORT_ROOT}/Logs/Lua.log"
+    if [[ ! -f "${log_path}" ]]; then
+      echo "Lua.log not found yet: ${log_path}" >&2
+      exit 1
+    fi
+    tail -n "${2:-120}" "${log_path}"
+    ;;
+  -h|--help|help|"")
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

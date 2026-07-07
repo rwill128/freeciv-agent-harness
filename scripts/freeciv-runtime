@@ -1,0 +1,526 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GAME_AI_DIR="$(cd "${ROOT_DIR}/.." && pwd)"
+
+FREECIV_BUILD_DIR="${FREECIV_BUILD_DIR:-${GAME_AI_DIR}/freeciv-s3_2-agent/build-agent-server}"
+FREECIV_PORT="${FREECIV_PORT:-5560}"
+CONTROL_HOST="${CONTROL_HOST:-127.0.0.1}"
+CONTROL_PORT="${CONTROL_PORT:-8787}"
+PLAYERS="${PLAYERS:-AgentA AgentB AgentC AgentD}"
+FREECIV_RULESETDIR="${FREECIV_RULESETDIR:-civ2civ3}"
+
+RUNTIME_DIR="${RUNTIME_DIR:-${ROOT_DIR}/runtime}"
+RUN_DIR="${RUNTIME_DIR}/run"
+LOG_DIR="${RUNTIME_DIR}/logs"
+SAVE_DIR="${RUNTIME_DIR}/saves"
+LAUNCHD_DIR="${RUNTIME_DIR}/launchd"
+STARTUP_SCRIPT="${RUNTIME_DIR}/freeciv-startup.serv"
+ARG_DIR="${FREECIV_ARG_DIR:-${TMPDIR:-/tmp}/freeciv-agent-harness}"
+ARG_SAVE_DIR="${ARG_DIR}/saves"
+ARG_DATA_DIR="${ARG_DIR}/data"
+ARG_SCENARIO_DIR="${ARG_DIR}/scenarios"
+ARG_STARTUP_SCRIPT="${ARG_DIR}/freeciv-startup.serv"
+ARG_FREECIV_LOG="${ARG_DIR}/freeciv-server.log"
+
+FREECIV_PID_FILE="${RUN_DIR}/freeciv-server.pid"
+CONTROL_PID_FILE="${RUN_DIR}/control-server.pid"
+FREECIV_LOG="${LOG_DIR}/freeciv-server.log"
+CONTROL_LOG="${LOG_DIR}/control-server.log"
+FREECIV_SCREEN_NAME="${FREECIV_SCREEN_NAME:-freeciv-agent-server-${FREECIV_PORT}}"
+CONTROL_SCREEN_NAME="${CONTROL_SCREEN_NAME:-freeciv-agent-control-${CONTROL_PORT}}"
+FREECIV_LABEL="com.freeciv-agent-harness.freeciv-server"
+CONTROL_LABEL="com.freeciv-agent-harness.control-server"
+FREECIV_PLIST="${LAUNCHD_DIR}/${FREECIV_LABEL}.plist"
+CONTROL_PLIST="${LAUNCHD_DIR}/${CONTROL_LABEL}.plist"
+
+mkdir -p "${RUN_DIR}" "${LOG_DIR}" "${SAVE_DIR}" "${LAUNCHD_DIR}" "${ARG_DIR}"
+
+usage() {
+  cat <<EOF
+Usage: $0 <command>
+
+Commands:
+  start-freeciv     Start detached Freeciv server on port ${FREECIV_PORT}
+  start-control     Start detached control server on port ${CONTROL_PORT}
+  start             Start Freeciv, then the control server
+  status            Show pid, process, port, and HTTP health status
+  stop-control      Stop only the control server
+  stop-freeciv      Stop only the Freeciv server
+  stop              Stop control server, then Freeciv server
+  logs              Tail both log files
+
+Environment overrides:
+  FREECIV_BUILD_DIR, FREECIV_PORT, CONTROL_HOST, CONTROL_PORT, PLAYERS,
+  FREECIV_RULESETDIR, RUNTIME_DIR, USE_LAUNCHD=0
+EOF
+}
+
+is_running() {
+  local pid_file="$1"
+  [[ -f "${pid_file}" ]] || return 1
+  local pid
+  pid="$(cat "${pid_file}")"
+  [[ -n "${pid}" ]] || return 1
+  kill -0 "${pid}" 2>/dev/null
+}
+
+pid_value() {
+  local pid_file="$1"
+  [[ -f "${pid_file}" ]] && cat "${pid_file}" || true
+}
+
+port_listeners() {
+  local port="$1"
+  lsof -nP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true
+}
+
+use_launchd() {
+  [[ "${USE_LAUNCHD:-1}" != "0" ]] || return 1
+  [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null 2>&1
+}
+
+launch_domain() {
+  echo "gui/$(id -u)"
+}
+
+launch_service_loaded() {
+  local label="$1"
+  launchctl print "$(launch_domain)/${label}" >/dev/null 2>&1
+}
+
+launch_pid() {
+  local label="$1"
+  launchctl print "$(launch_domain)/${label}" 2>/dev/null \
+    | awk -F'= ' '/^[[:space:]]*pid = / {print $2; exit}' || true
+}
+
+launch_exit_status() {
+  local label="$1"
+  launchctl print "$(launch_domain)/${label}" 2>/dev/null \
+    | awk -F'= ' '/last exit code = / {print $2; exit}' || true
+}
+
+write_freeciv_plist() {
+  cat >"${FREECIV_PLIST}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${FREECIV_LABEL}</string>
+  <key>WorkingDirectory</key>
+  <string>${FREECIV_BUILD_DIR}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FREECIV_DATA_PATH</key>
+    <string>${ARG_DATA_DIR}</string>
+    <key>FREECIV_SCENARIO_PATH</key>
+    <string>${ARG_SCENARIO_DIR}</string>
+    <key>FREECIV_SAVE_PATH</key>
+    <string>${ARG_SAVE_DIR}</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${FREECIV_BUILD_DIR}/run.sh</string>
+    <string>freeciv-server</string>
+    <string>--Announce</string>
+    <string>none</string>
+    <string>--port</string>
+    <string>${FREECIV_PORT}</string>
+    <string>--read</string>
+    <string>${ARG_STARTUP_SCRIPT}</string>
+    <string>--saves</string>
+    <string>${ARG_SAVE_DIR}</string>
+    <string>--log</string>
+    <string>${ARG_FREECIV_LOG}</string>
+  </array>
+  <key>StandardOutPath</key>
+  <string>${ARG_FREECIV_LOG}</string>
+  <key>StandardErrorPath</key>
+  <string>${ARG_FREECIV_LOG}</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
+EOF
+}
+
+write_control_plist() {
+  local python_bin
+  python_bin="$(command -v python3)"
+  cat >"${CONTROL_PLIST}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${CONTROL_LABEL}</string>
+  <key>WorkingDirectory</key>
+  <string>${ROOT_DIR}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${python_bin}</string>
+    <string>-u</string>
+    <string>-m</string>
+    <string>freeciv_agent.control_server</string>
+    <string>--freeciv-host</string>
+    <string>127.0.0.1</string>
+    <string>--freeciv-port</string>
+    <string>${FREECIV_PORT}</string>
+    <string>--http-host</string>
+    <string>${CONTROL_HOST}</string>
+    <string>--http-port</string>
+    <string>${CONTROL_PORT}</string>
+    <string>--rulesetdir</string>
+    <string>${FREECIV_RULESETDIR}</string>
+    <string>--data-dir</string>
+    <string>${GAME_AI_DIR}/freeciv-s3_2-agent/data</string>
+    <string>--players</string>
+EOF
+  for player in ${PLAYERS}; do
+    printf '    <string>%s</string>\n' "${player}" >>"${CONTROL_PLIST}"
+  done
+  cat >>"${CONTROL_PLIST}" <<EOF
+  </array>
+  <key>StandardOutPath</key>
+  <string>${CONTROL_LOG}</string>
+  <key>StandardErrorPath</key>
+  <string>${CONTROL_LOG}</string>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
+EOF
+}
+
+bootstrap_and_kickstart() {
+  local label="$1"
+  local plist="$2"
+  if ! launch_service_loaded "${label}"; then
+    launchctl bootstrap "$(launch_domain)" "${plist}"
+  fi
+  launchctl kickstart -k "$(launch_domain)/${label}"
+}
+
+wait_for_tcp() {
+  local host="$1"
+  local port="$2"
+  local deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    if python3 - "${host}" "${port}" <<'PY' >/dev/null 2>&1
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+with socket.create_connection((host, port), timeout=0.5):
+    pass
+PY
+    then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+ensure_startup_script() {
+  cat >"${STARTUP_SCRIPT}" <<EOF
+rulesetdir ${FREECIV_RULESETDIR}
+set phasemode PLAYER
+set aifill 0
+set maxconnectionsperhost 16
+EOF
+  cp "${STARTUP_SCRIPT}" "${ARG_STARTUP_SCRIPT}"
+  rm -rf "${ARG_SAVE_DIR}"
+  ln -s "${SAVE_DIR}" "${ARG_SAVE_DIR}"
+  rm -rf "${ARG_DATA_DIR}" "${ARG_SCENARIO_DIR}"
+  ln -s "${GAME_AI_DIR}/freeciv-s3_2-agent/data" "${ARG_DATA_DIR}"
+  ln -s "${GAME_AI_DIR}/freeciv-s3_2-agent/data/scenarios" "${ARG_SCENARIO_DIR}"
+  : >"${ARG_FREECIV_LOG}"
+  ln -sf "${ARG_FREECIV_LOG}" "${FREECIV_LOG}"
+}
+
+start_freeciv() {
+  if is_running "${FREECIV_PID_FILE}"; then
+    echo "Freeciv server already running pid=$(pid_value "${FREECIV_PID_FILE}")"
+    return 0
+  fi
+  if [[ -n "$(port_listeners "${FREECIV_PORT}")" ]]; then
+    echo "Port ${FREECIV_PORT} is already in use; refusing to start another Freeciv server." >&2
+    port_listeners "${FREECIV_PORT}" >&2
+    return 1
+  fi
+  if [[ ! -x "${FREECIV_BUILD_DIR}/run.sh" ]]; then
+    echo "Missing Freeciv run script: ${FREECIV_BUILD_DIR}/run.sh" >&2
+    return 1
+  fi
+
+  ensure_startup_script
+  if use_launchd; then
+    write_freeciv_plist
+    bootstrap_and_kickstart "${FREECIV_LABEL}" "${FREECIV_PLIST}"
+  else
+    if command -v screen >/dev/null 2>&1; then
+      screen -S "${FREECIV_SCREEN_NAME}" -X quit >/dev/null 2>&1 || true
+      screen -dmS "${FREECIV_SCREEN_NAME}" bash -lc '
+        set -euo pipefail
+        cd "$1"
+        export FREECIV_DATA_PATH="$5"
+        export FREECIV_SCENARIO_PATH="$6"
+        export FREECIV_SAVE_PATH="$3"
+        ./run.sh freeciv-server \
+          --Announce none \
+          --port "$2" \
+          --read "$4" \
+          --saves "$3" \
+          --log "$7"
+      ' _ "${FREECIV_BUILD_DIR}" "${FREECIV_PORT}" "${ARG_SAVE_DIR}" "${ARG_STARTUP_SCRIPT}" "${ARG_DATA_DIR}" "${ARG_SCENARIO_DIR}" "${ARG_FREECIV_LOG}"
+      (screen -ls || true) | awk -v name="${FREECIV_SCREEN_NAME}" '$0 ~ name {split($1, a, "."); print a[1]; exit}' >"${FREECIV_PID_FILE}"
+    else
+    (
+      cd "${FREECIV_BUILD_DIR}"
+      export FREECIV_DATA_PATH="${ARG_DATA_DIR}"
+      export FREECIV_SCENARIO_PATH="${ARG_SCENARIO_DIR}"
+      export FREECIV_SAVE_PATH="${ARG_SAVE_DIR}"
+      nohup bash -c '
+      set -euo pipefail
+      tail -f /dev/null | ./run.sh freeciv-server \
+        --Announce none \
+        --port "$1" \
+        --read "$2" \
+        --saves "$3" \
+        --log "$4"
+      ' _ "${FREECIV_PORT}" "${ARG_STARTUP_SCRIPT}" "${ARG_SAVE_DIR}" "${ARG_FREECIV_LOG}" \
+        >>"${ARG_FREECIV_LOG}" 2>&1 &
+      echo $! >"${FREECIV_PID_FILE}"
+    )
+    fi
+  fi
+
+  if ! wait_for_tcp "127.0.0.1" "${FREECIV_PORT}"; then
+    echo "Freeciv server did not open port ${FREECIV_PORT}. See ${FREECIV_LOG}" >&2
+    if use_launchd && launch_service_loaded "${FREECIV_LABEL}"; then
+      echo "launchd status: pid=$(launch_pid "${FREECIV_LABEL}") last_exit=$(launch_exit_status "${FREECIV_LABEL}")" >&2
+    fi
+    return 1
+  fi
+  if use_launchd; then
+    echo "Freeciv server started via launchd pid=$(launch_pid "${FREECIV_LABEL}") port=${FREECIV_PORT}"
+  else
+    echo "Freeciv server started pid=$(pid_value "${FREECIV_PID_FILE}") port=${FREECIV_PORT}"
+  fi
+  echo "Startup script: ${STARTUP_SCRIPT}"
+  echo "Log: ${FREECIV_LOG}"
+  echo "Freeciv argument path mirror: ${ARG_DIR}"
+}
+
+start_control() {
+  if is_running "${CONTROL_PID_FILE}"; then
+    echo "Control server already running pid=$(pid_value "${CONTROL_PID_FILE}")"
+    return 0
+  fi
+  if [[ -n "$(port_listeners "${CONTROL_PORT}")" ]]; then
+    echo "Port ${CONTROL_PORT} is already in use; refusing to start another control server." >&2
+    port_listeners "${CONTROL_PORT}" >&2
+    return 1
+  fi
+
+  : >"${CONTROL_LOG}"
+  if use_launchd; then
+    write_control_plist
+    bootstrap_and_kickstart "${CONTROL_LABEL}" "${CONTROL_PLIST}"
+  else
+    if command -v screen >/dev/null 2>&1; then
+      screen -S "${CONTROL_SCREEN_NAME}" -X quit >/dev/null 2>&1 || true
+      screen -dmS "${CONTROL_SCREEN_NAME}" bash -lc '
+        set -euo pipefail
+        cd "$1"
+        shift
+        exec "$@"
+      ' _ "${ROOT_DIR}" \
+        python3 -u -m freeciv_agent.control_server \
+          --freeciv-host 127.0.0.1 \
+          --freeciv-port "${FREECIV_PORT}" \
+          --http-host "${CONTROL_HOST}" \
+          --http-port "${CONTROL_PORT}" \
+          --rulesetdir "${FREECIV_RULESETDIR}" \
+          --data-dir "${GAME_AI_DIR}/freeciv-s3_2-agent/data" \
+          --players ${PLAYERS} \
+          >>"${CONTROL_LOG}" 2>&1
+      (screen -ls || true) | awk -v name="${CONTROL_SCREEN_NAME}" '$0 ~ name {split($1, a, "."); print a[1]; exit}' >"${CONTROL_PID_FILE}"
+    else
+      (
+        cd "${ROOT_DIR}"
+        nohup python3 -u -m freeciv_agent.control_server \
+          --freeciv-host 127.0.0.1 \
+          --freeciv-port "${FREECIV_PORT}" \
+          --http-host "${CONTROL_HOST}" \
+          --http-port "${CONTROL_PORT}" \
+          --rulesetdir "${FREECIV_RULESETDIR}" \
+          --data-dir "${GAME_AI_DIR}/freeciv-s3_2-agent/data" \
+          --players ${PLAYERS} \
+          >>"${CONTROL_LOG}" 2>&1 </dev/null &
+        echo $! >"${CONTROL_PID_FILE}"
+      )
+    fi
+  fi
+
+  if ! wait_for_tcp "${CONTROL_HOST}" "${CONTROL_PORT}"; then
+    echo "Control server did not open ${CONTROL_HOST}:${CONTROL_PORT}. See ${CONTROL_LOG}" >&2
+    if use_launchd && launch_service_loaded "${CONTROL_LABEL}"; then
+      echo "launchd status: pid=$(launch_pid "${CONTROL_LABEL}") last_exit=$(launch_exit_status "${CONTROL_LABEL}")" >&2
+    fi
+    return 1
+  fi
+  sleep 1
+  if ! wait_for_tcp "${CONTROL_HOST}" "${CONTROL_PORT}"; then
+    echo "Control server opened then exited. See ${CONTROL_LOG}" >&2
+    if use_launchd && launch_service_loaded "${CONTROL_LABEL}"; then
+      echo "launchd status: pid=$(launch_pid "${CONTROL_LABEL}") last_exit=$(launch_exit_status "${CONTROL_LABEL}")" >&2
+    fi
+    return 1
+  fi
+  if use_launchd; then
+    echo "Control server started via launchd pid=$(launch_pid "${CONTROL_LABEL}") http://${CONTROL_HOST}:${CONTROL_PORT}"
+  else
+    echo "Control server started pid=$(pid_value "${CONTROL_PID_FILE}") http://${CONTROL_HOST}:${CONTROL_PORT}"
+  fi
+  echo "Log: ${CONTROL_LOG}"
+}
+
+stop_one() {
+  local label="$1"
+  local pid_file="$2"
+  if ! is_running "${pid_file}"; then
+    echo "${label} is not running"
+    rm -f "${pid_file}"
+    return 0
+  fi
+  local pid
+  pid="$(cat "${pid_file}")"
+  kill "${pid}" 2>/dev/null || true
+  for _ in {1..20}; do
+    if ! kill -0 "${pid}" 2>/dev/null; then
+      rm -f "${pid_file}"
+      echo "${label} stopped"
+      return 0
+    fi
+    sleep 0.25
+  done
+  kill -KILL "${pid}" 2>/dev/null || true
+  rm -f "${pid_file}"
+  echo "${label} killed after graceful stop timeout"
+}
+
+stop_launchd_or_pid() {
+  local label="$1"
+  local human="$2"
+  local pid_file="$3"
+  if use_launchd && launch_service_loaded "${label}"; then
+    launchctl bootout "$(launch_domain)" "${LAUNCHD_DIR}/${label}.plist" >/dev/null 2>&1 \
+      || launchctl bootout "$(launch_domain)/${label}" >/dev/null 2>&1 \
+      || true
+    rm -f "${pid_file}"
+    echo "${human} launchd service stopped"
+    return 0
+  fi
+  if [[ "${label}" == "${CONTROL_LABEL}" ]]; then
+    screen -S "${CONTROL_SCREEN_NAME}" -X quit >/dev/null 2>&1 || true
+  elif [[ "${label}" == "${FREECIV_LABEL}" ]]; then
+    screen -S "${FREECIV_SCREEN_NAME}" -X quit >/dev/null 2>&1 || true
+  fi
+  stop_one "${human}" "${pid_file}"
+}
+
+kill_port_listeners() {
+  local human="$1"
+  local port="$2"
+  local pids
+  pids="$(lsof -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true)"
+  [[ -n "${pids}" ]] || return 0
+
+  echo "${human}: stopping remaining listener pid(s) on port ${port}: ${pids}"
+  kill ${pids} 2>/dev/null || true
+  for _ in {1..20}; do
+    if [[ -z "$(lsof -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true)" ]]; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  pids="$(lsof -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true)"
+  [[ -z "${pids}" ]] || kill -KILL ${pids} 2>/dev/null || true
+}
+
+status() {
+  echo "Runtime dir: ${RUNTIME_DIR}"
+  if use_launchd && launch_service_loaded "${FREECIV_LABEL}"; then
+    echo "Freeciv server: launchd loaded pid=$(launch_pid "${FREECIV_LABEL}") last_exit=$(launch_exit_status "${FREECIV_LABEL}") port=${FREECIV_PORT}"
+  elif is_running "${FREECIV_PID_FILE}"; then
+    echo "Freeciv server: running pid=$(pid_value "${FREECIV_PID_FILE}") port=${FREECIV_PORT}"
+  elif [[ -n "$(port_listeners "${FREECIV_PORT}")" ]]; then
+    echo "Freeciv server: unmanaged listener on port ${FREECIV_PORT}"
+  else
+    echo "Freeciv server: not running"
+  fi
+  port_listeners "${FREECIV_PORT}"
+  if use_launchd && launch_service_loaded "${CONTROL_LABEL}"; then
+    echo "Control server: launchd loaded pid=$(launch_pid "${CONTROL_LABEL}") last_exit=$(launch_exit_status "${CONTROL_LABEL}") http://${CONTROL_HOST}:${CONTROL_PORT}"
+  elif is_running "${CONTROL_PID_FILE}"; then
+    echo "Control server: running pid=$(pid_value "${CONTROL_PID_FILE}") http://${CONTROL_HOST}:${CONTROL_PORT}"
+  elif [[ -n "$(port_listeners "${CONTROL_PORT}")" ]]; then
+    echo "Control server: unmanaged listener on port ${CONTROL_PORT}"
+  else
+    echo "Control server: not running"
+  fi
+  port_listeners "${CONTROL_PORT}"
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fsS "http://${CONTROL_HOST}:${CONTROL_PORT}/brief" >/dev/null 2>&1; then
+      echo "Control HTTP: healthy"
+    else
+      echo "Control HTTP: unavailable"
+    fi
+  fi
+}
+
+case "${1:-}" in
+  start-freeciv)
+    start_freeciv
+    ;;
+  start-control)
+    start_control
+    ;;
+  start)
+    start_freeciv
+    start_control
+    ;;
+  status)
+    status
+    ;;
+  stop-control)
+    stop_launchd_or_pid "${CONTROL_LABEL}" "Control server" "${CONTROL_PID_FILE}"
+    kill_port_listeners "Control server" "${CONTROL_PORT}"
+    ;;
+  stop-freeciv)
+    stop_launchd_or_pid "${FREECIV_LABEL}" "Freeciv server" "${FREECIV_PID_FILE}"
+    kill_port_listeners "Freeciv server" "${FREECIV_PORT}"
+    ;;
+  stop)
+    stop_launchd_or_pid "${CONTROL_LABEL}" "Control server" "${CONTROL_PID_FILE}"
+    kill_port_listeners "Control server" "${CONTROL_PORT}"
+    stop_launchd_or_pid "${FREECIV_LABEL}" "Freeciv server" "${FREECIV_PID_FILE}"
+    kill_port_listeners "Freeciv server" "${FREECIV_PORT}"
+    ;;
+  logs)
+    tail -f "${FREECIV_LOG}" "${CONTROL_LOG}"
+    ;;
+  -h|--help|help|"")
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

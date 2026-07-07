@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Freeciv Codex Turn Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "player",
+    "turn",
+    "phase_done",
+    "actions_taken",
+    "turn_summary",
+    "private_intent",
+    "public_message",
+    "errors"
+  ],
+  "properties": {
+    "player": {
+      "type": "string"
+    },
+    "turn": {
+      "type": ["integer", "null"],
+      "description": "Freeciv turn number observed during the turn."
+    },
+    "phase_done": {
+      "type": "boolean",
+      "description": "True only if the agent successfully called bin/game phase-done."
+    },
+    "actions_taken": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "turn_summary": {
+      "type": "string",
+      "description": "Short factual summary of what happened during this turn. This is for logs only and is not persistent player memory."
+    },
+    "private_intent": {
+      "type": "string",
+      "description": "Same private note submitted through bin/game phase-done --intent. Stored by the harness as a private match artifact, not persistent player memory."
+    },
+    "public_message": {
+      "type": "string",
+      "description": "Exact public in-game chat message sent this turn when public turn message mode is enabled; otherwise an empty string."
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+cd "${REPO_ROOT}"
+python3 - <<'PY'
+import json, pathlib, statistics
+
+PRICES = {
+    "gpt-5.5": (5.00, 0.50, 30.00),
+    "gpt-5.4": (2.50, 0.25, 15.00),
+    "gpt-5.4-mini": (0.75, 0.075, 4.50),
+    "gpt-5.4-nano": (0.20, 0.02, 1.25),
+}
+
+rows = []
+for path in sorted(pathlib.Path("runtime/turns").glob("*-api-transcript.json")):
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        continue
+    usage = payload.get("usage") or {}
+    rows.append({
+        "path": str(path),
+        "model": payload.get("model"),
+        "input": int(usage.get("input_tokens") or 0),
+        "cached": int(usage.get("cached_input_tokens") or 0),
+        "uncached": int(usage.get("uncached_input_tokens") or 0),
+        "output": int(usage.get("output_tokens") or 0),
+        "reasoning": int(usage.get("reasoning_output_tokens") or 0),
+    })
+
+if not rows:
+    print("No API transcript usage found under runtime/turns.")
+    raise SystemExit(0)
+
+def avg(key):
+    return statistics.mean(row[key] for row in rows)
+
+print(f"API turns: {len(rows)}")
+for key in ("input", "cached", "uncached", "output", "reasoning"):
+    print(f"{key}: avg={avg(key):.0f}")
+print()
+for model, (inp, cached, out) in PRICES.items():
+    per = (
+        avg("uncached") / 1_000_000 * inp
+        + avg("cached") / 1_000_000 * cached
+        + avg("output") / 1_000_000 * out
+    )
+    print(f"{model}: avg/player-turn=${per:.4f}  400=${per*400:.2f}  1000=${per*1000:.2f}")
+PY

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Mod id="e5c9c7f4-7cc0-4c70-8cc6-6b7d7f700001" version="1">
+  <Properties>
+    <Name>Civ6 Agent Bridge</Name>
+    <Teaser>Exports active player state for external LLM agent harness experiments.</Teaser>
+    <Description>Development bridge for reading Civ 6 state and exposing command hooks to FireTuner.</Description>
+    <Authors>Game AI Science</Authors>
+    <CompatibleVersions>2.0</CompatibleVersions>
+  </Properties>
+  <InGameActions>
+    <AddGameplayScripts id="Civ6AgentBridgeScripts">
+      <File>Civ6AgentBridge.lua</File>
+    </AddGameplayScripts>
+  </InGameActions>
+  <Files>
+    <File>Civ6AgentBridge.lua</File>
+  </Files>
+</Mod>

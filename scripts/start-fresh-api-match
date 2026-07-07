@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+MODEL="${MODEL:-gpt-5.4-nano}"
+REASONING_EFFORT="${REASONING_EFFORT:-low}"
+TURN_TIMEOUT="${TURN_TIMEOUT:-180}"
+TURN_RETRIES="${TURN_RETRIES:-1}"
+PLAYERS="${PLAYERS:-AgentA AgentB}"
+if [[ -z "${PLAYERS//[[:space:]]/}" ]]; then
+  PLAYERS="AgentA AgentB"
+fi
+MCP_VERSIONS="${MCP_VERSIONS:-}"
+MCP_ARTIFACT_MODE="${MCP_ARTIFACT_MODE:-off}"
+MCP_ARTIFACT_MODES="${MCP_ARTIFACT_MODES:-}"
+MCP_ARTIFACT_PREVIEW_CHARS="${MCP_ARTIFACT_PREVIEW_CHARS:-800}"
+MAX_TOOL_ITERATIONS="${MAX_TOOL_ITERATIONS:-16}"
+MAX_OUTPUT_TOKENS="${MAX_OUTPUT_TOKENS:-4096}"
+NARRATIVE_LOG="${NARRATIVE_LOG:-0}"
+NARRATIVE_PLAYERS="${NARRATIVE_PLAYERS:-}"
+PUBLIC_TURN_MESSAGE="${PUBLIC_TURN_MESSAGE:-0}"
+VICTORY_MODES="${VICTORY_MODES:-}"
+RESET_SESSIONS="${RESET_SESSIONS:-1}"
+RESET_NARRATIVE="${RESET_NARRATIVE:-1}"
+RESET_MCP_ARTIFACTS="${RESET_MCP_ARTIFACTS:-1}"
+START_VIEWERS="${START_VIEWERS:-1}"
+VIEWER_MODE="${VIEWER_MODE:-observer}"
+SET_PLAYER_NATIONS="${SET_PLAYER_NATIONS:-1}"
+PLAYER_NATIONS="${PLAYER_NATIONS:-american english german french}"
+SOUND_PLUGIN="${SOUND_PLUGIN:-none}"
+CONTROL_URL="${CONTROL_URL:-http://127.0.0.1:8787}"
+VERIFY_SLEEP="${VERIFY_SLEEP:-8}"
+GTK_BIN="${GTK_BIN:-/opt/homebrew/bin/freeciv-gtk4}"
+
+usage() {
+  cat <<EOF
+Usage: $0
+
+Starts a fresh API/MCP Freeciv match end-to-end for PLAYERS.
+
+Environment overrides:
+  MODEL=${MODEL}
+  REASONING_EFFORT=${REASONING_EFFORT}
+  TURN_TIMEOUT=${TURN_TIMEOUT}
+  TURN_RETRIES=${TURN_RETRIES}
+  PLAYERS=${PLAYERS}
+  MCP_VERSIONS=${MCP_VERSIONS}
+  MCP_ARTIFACT_MODE=${MCP_ARTIFACT_MODE}
+  MCP_ARTIFACT_MODES=${MCP_ARTIFACT_MODES}
+  MCP_ARTIFACT_PREVIEW_CHARS=${MCP_ARTIFACT_PREVIEW_CHARS}
+  MAX_TOOL_ITERATIONS=${MAX_TOOL_ITERATIONS}
+  MAX_OUTPUT_TOKENS=${MAX_OUTPUT_TOKENS}
+  NARRATIVE_LOG=${NARRATIVE_LOG}
+  NARRATIVE_PLAYERS=${NARRATIVE_PLAYERS}
+  PUBLIC_TURN_MESSAGE=${PUBLIC_TURN_MESSAGE}
+  VICTORY_MODES=${VICTORY_MODES}
+  RESET_SESSIONS=${RESET_SESSIONS}
+  RESET_NARRATIVE=${RESET_NARRATIVE}
+  RESET_MCP_ARTIFACTS=${RESET_MCP_ARTIFACTS}
+  START_VIEWERS=${START_VIEWERS}
+  VIEWER_MODE=${VIEWER_MODE}
+  SET_PLAYER_NATIONS=${SET_PLAYER_NATIONS}
+  PLAYER_NATIONS=${PLAYER_NATIONS}
+  SOUND_PLUGIN=${SOUND_PLUGIN}
+  CONTROL_URL=${CONTROL_URL}
+  VERIFY_SLEEP=${VERIFY_SLEEP}
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
+  usage
+  exit 0
+fi
+
+kill_matching() {
+  local pattern="$1"
+  local pids
+  pids="$(pgrep -f "${pattern}" 2>/dev/null || true)"
+  for pid in ${pids}; do
+    [[ "${pid}" != "$$" && "${pid}" != "${BASHPID:-$$}" && "${pid}" != "${PPID}" ]] || continue
+    kill "${pid}" >/dev/null 2>&1 || true
+  done
+}
+
+kill_matching_hard() {
+  local pattern="$1"
+  local pids
+  pids="$(pgrep -f "${pattern}" 2>/dev/null || true)"
+  for pid in ${pids}; do
+    [[ "${pid}" != "$$" && "${pid}" != "${BASHPID:-$$}" && "${pid}" != "${PPID}" ]] || continue
+    kill -KILL "${pid}" >/dev/null 2>&1 || true
+  done
+}
+
+kill_port_listeners() {
+  local port="$1"
+  local pids
+  pids="$(lsof -ti "tcp:${port}" 2>/dev/null || true)"
+  for pid in ${pids}; do
+    [[ "${pid}" != "$$" && "${pid}" != "${BASHPID:-$$}" && "${pid}" != "${PPID}" ]] || continue
+    kill "${pid}" >/dev/null 2>&1 || true
+  done
+  sleep 0.5
+  pids="$(lsof -ti "tcp:${port}" 2>/dev/null || true)"
+  for pid in ${pids}; do
+    [[ "${pid}" != "$$" && "${pid}" != "${BASHPID:-$$}" && "${pid}" != "${PPID}" ]] || continue
+    kill -KILL "${pid}" >/dev/null 2>&1 || true
+  done
+}
+
+stop_processes() {
+  screen -S freeciv-api-match -X quit >/dev/null 2>&1 || true
+  screen -S freeciv-codex-match -X quit >/dev/null 2>&1 || true
+  rm -f "${REPO_ROOT}/runtime/run/stop-api-match" "${REPO_ROOT}/runtime/run/stop-codex-match"
+
+  kill_matching "freeciv_agent.api_match_runner"
+  kill_matching "freeciv_agent.api_turn_runner"
+  kill_matching "freeciv_agent.codex_match_runner"
+  kill_matching "freeciv_agent.codex_turn_runner"
+  kill_matching "codex exec -C ${REPO_ROOT}/players/"
+  for player in ${PLAYERS}; do
+    screen -S "freeciv-viewer-${player}" -X quit >/dev/null 2>&1 || true
+    screen -S "freeciv-viewer-${player}View" -X quit >/dev/null 2>&1 || true
+    kill_matching "${GTK_BIN}.*-n ${player}"
+    kill_matching "${GTK_BIN}.*-n ${player}View"
+  done
+  sleep 0.5
+  kill_matching_hard "freeciv_agent.api_match_runner"
+  kill_matching_hard "freeciv_agent.api_turn_runner"
+  kill_matching_hard "freeciv_agent.codex_match_runner"
+  kill_matching_hard "freeciv_agent.codex_turn_runner"
+  kill_matching_hard "codex exec -C ${REPO_ROOT}/players/"
+  for player in ${PLAYERS}; do
+    kill_matching_hard "${GTK_BIN}.*-n ${player}"
+    kill_matching_hard "${GTK_BIN}.*-n ${player}View"
+  done
+}
+
+cd "${REPO_ROOT}"
+mkdir -p runtime/logs runtime/run
+
+if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+  echo "OPENAI_API_KEY is not set; cannot start API players." >&2
+  exit 2
+fi
+
+echo "Stopping old match/runtime processes..."
+stop_processes
+scripts/freeciv-runtime stop-control || true
+scripts/freeciv-runtime stop-freeciv || true
+USE_LAUNCHD=0 scripts/freeciv-runtime stop-freeciv || true
+CONTROL_PORT="${CONTROL_URL##*:}"
+kill_port_listeners "${CONTROL_PORT}"
+
+echo "Starting Freeciv server in screen..."
+PLAYERS="${PLAYERS}" USE_LAUNCHD=0 scripts/freeciv-runtime start-freeciv
+
+echo "Starting control API in screen..."
+PLAYERS="${PLAYERS}" USE_LAUNCHD=0 scripts/freeciv-runtime start-control
+
+if [[ "${SET_PLAYER_NATIONS}" != "0" ]]; then
+  echo "Assigning deterministic ASCII player nations/leaders..."
+  PLAYERS="${PLAYERS}" PLAYER_NATIONS="${PLAYER_NATIONS}" scripts/set-player-nations
+fi
+
+if [[ "${START_VIEWERS}" != "0" ]]; then
+  echo "Starting muted player viewers..."
+  PLAYERS="${PLAYERS}" SOUND_PLUGIN="${SOUND_PLUGIN}" VIEWER_MODE="${VIEWER_MODE}" scripts/start-player-viewers >/tmp/freeciv-agent-api-viewers.log 2>&1
+  tail -n 40 /tmp/freeciv-agent-api-viewers.log || true
+fi
+
+echo "Starting API match loop..."
+MODEL="${MODEL}" \
+REASONING_EFFORT="${REASONING_EFFORT}" \
+TURN_TIMEOUT="${TURN_TIMEOUT}" \
+TURN_RETRIES="${TURN_RETRIES}" \
+PLAYERS="${PLAYERS}" \
+MCP_VERSIONS="${MCP_VERSIONS}" \
+MCP_ARTIFACT_MODE="${MCP_ARTIFACT_MODE}" \
+MCP_ARTIFACT_MODES="${MCP_ARTIFACT_MODES}" \
+MCP_ARTIFACT_PREVIEW_CHARS="${MCP_ARTIFACT_PREVIEW_CHARS}" \
+MAX_TOOL_ITERATIONS="${MAX_TOOL_ITERATIONS}" \
+MAX_OUTPUT_TOKENS="${MAX_OUTPUT_TOKENS}" \
+NARRATIVE_LOG="${NARRATIVE_LOG}" \
+NARRATIVE_PLAYERS="${NARRATIVE_PLAYERS}" \
+PUBLIC_TURN_MESSAGE="${PUBLIC_TURN_MESSAGE}" \
+VICTORY_MODES="${VICTORY_MODES}" \
+RESET_SESSIONS="${RESET_SESSIONS}" \
+RESET_NARRATIVE="${RESET_NARRATIVE}" \
+RESET_MCP_ARTIFACTS="${RESET_MCP_ARTIFACTS}" \
+START_VIEWERS=0 \
+CONTROL_URL="${CONTROL_URL}" \
+scripts/start-api-match
+
+sleep "${VERIFY_SLEEP}"
+
+echo
+echo "Runtime status:"
+scripts/freeciv-runtime status
+
+echo
+echo "Screens:"
+screen -ls || true
+
+echo
+echo "Recent API match log:"
+tail -n 80 runtime/logs/api-match-runner.log || true

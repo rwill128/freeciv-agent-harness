@@ -14,3 +14,8 @@ env/
 dist/
 build/
 *.egg-info/
+runtime/
+players/*/.codex-session.json
+players/*/.api-agent-session.json
+players/*/mcp-artifacts/
+players/*/narrative.md

@@ -5,6 +5,8 @@ import socket
 import struct
 import time
 from dataclasses import dataclass
+from pathlib import Path
+from secrets import token_urlsafe
 from typing import Any
 
 
@@ -127,8 +129,74 @@ class FreecivJsonClient:
             }
         )
 
+    def send_player_rates(self, *, tax: int, luxury: int, science: int) -> None:
+        self.send_packet(
+            {
+                "pid": 53,
+                "fields": _bitvector_bytes(3, [0, 1, 2]),
+                "tax": tax,
+                "luxury": luxury,
+                "science": science,
+            }
+        )
+
+    def send_player_research(self, *, tech: int) -> None:
+        self.send_packet(
+            {
+                "pid": 55,
+                "fields": _bitvector_bytes(1, [0]),
+                "tech": tech,
+            }
+        )
+
+    def send_player_tech_goal(self, *, tech: int) -> None:
+        self.send_packet(
+            {
+                "pid": 56,
+                "fields": _bitvector_bytes(1, [0]),
+                "tech": tech,
+            }
+        )
+
     def send_pong(self) -> None:
         self.send_packet({"pid": 89})
+
+    def request_hack_access(
+        self,
+        *,
+        challenge_file: str,
+        token: str | None = None,
+        reply_timeout: float = 10.0,
+    ) -> bool:
+        token = token or token_urlsafe(32)
+        challenge_path = Path.home() / ".freeciv" / challenge_file
+        challenge_path.parent.mkdir(parents=True, exist_ok=True)
+        challenge_path.write_text(
+            f'\n[challenge]\ntoken="{token}"\n',
+            encoding="utf-8",
+        )
+        self.send_packet(
+            {
+                "pid": 160,
+                "fields": _bitvector_bytes(1, [0]),
+                "token": token,
+            }
+        )
+        deadline = time.monotonic() + reply_timeout
+        while time.monotonic() < deadline:
+            packet = self.read_packet()
+            if packet.get("pid") == 161:
+                return bool(packet.get("you_have_hack"))
+        raise TimeoutError("timed out waiting for PACKET_SINGLE_WANT_HACK_REPLY")
+
+    def send_chat_message(self, message: str) -> None:
+        self.send_packet(
+            {
+                "pid": 26,
+                "fields": _bitvector_bytes(1, [0]),
+                "message": message,
+            }
+        )
 
     def send_nation_select(
         self,

@@ -2,23 +2,35 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 
+DEFAULT_BASE_URL = "http://127.0.0.1:8787"
+ROOT = Path(__file__).resolve().parents[1]
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="CLI for the Freeciv control API.")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8787")
+    player = os.environ.get("FREECIV_PLAYER_NAME")
+    if not player:
+        raise SystemExit("FREECIV_PLAYER_NAME is required")
+
+    base_url = os.environ.get("FREECIV_CONTROL_URL", DEFAULT_BASE_URL).rstrip("/")
+
+    parser = argparse.ArgumentParser(
+        description=f"Player-scoped Freeciv CLI for {player}."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("state")
+    subparsers.add_parser("whoami")
     subparsers.add_parser("ruleset")
-
     production_targets = subparsers.add_parser("production-targets")
-    production_targets.add_argument("name")
     production_targets.add_argument(
         "--json",
         action="store_true",
@@ -34,42 +46,25 @@ def main() -> None:
         type=int,
         help="Include city-specific advisory legality for this city.",
     )
-
     brief = subparsers.add_parser("brief")
-    brief.add_argument("name", nargs="?")
     brief.add_argument(
         "--json",
         action="store_true",
-        help="Emit full verbose JSON instead of the compact text view.",
+        help="Emit the full verbose brief JSON instead of the compact text view.",
     )
-
-    player_state = subparsers.add_parser("player")
-    player_state.add_argument("name")
-
-    player_packet_audit = subparsers.add_parser("player-packet-audit")
-    player_packet_audit.add_argument("name")
+    subparsers.add_parser("state")
 
     messages = subparsers.add_parser("messages")
-    messages.add_argument("name")
     messages.add_argument("--limit", default=20, type=int)
 
     local_view = subparsers.add_parser("local-view")
-    local_view.add_argument("name")
-    local_view.add_argument("--unit-id", type=int)
-    local_view.add_argument("--city-id", type=int)
-    local_view.add_argument("--tile-id", type=int)
-    local_view.add_argument("--radius", default=2, type=int)
+    add_view_args(local_view, default_radius=2)
 
     ascii_view = subparsers.add_parser("ascii-view")
-    ascii_view.add_argument("name")
-    ascii_view.add_argument("--unit-id", type=int)
-    ascii_view.add_argument("--city-id", type=int)
-    ascii_view.add_argument("--tile-id", type=int)
-    ascii_view.add_argument("--radius", default=3, type=int)
+    add_view_args(ascii_view, default_radius=3)
     ascii_view.add_argument("--text", action="store_true")
 
     valid_moves = subparsers.add_parser("valid-moves")
-    valid_moves.add_argument("name")
     valid_moves.add_argument("unit_id", type=int)
     valid_moves.add_argument(
         "--json",
@@ -78,31 +73,29 @@ def main() -> None:
     )
 
     ready = subparsers.add_parser("ready")
-    ready.add_argument("name")
+    ready.add_argument("--not-ready", action="store_true")
 
     say = subparsers.add_parser("say")
-    say.add_argument("name")
     say.add_argument("message")
 
     private_intent = subparsers.add_parser("private-intent")
-    private_intent.add_argument("name")
     private_intent.add_argument("intent")
     private_intent.add_argument("--turn", type=int)
 
+    narrative = subparsers.add_parser("narrative")
+    narrative.add_argument("entry")
+
     phase_done = subparsers.add_parser("phase-done")
-    phase_done.add_argument("name")
     phase_done.add_argument("--turn", type=int)
     phase_done.add_argument("--intent")
     phase_done.add_argument("--wait", default=2.0, type=float)
 
     found_city = subparsers.add_parser("found-city")
-    found_city.add_argument("name")
     found_city.add_argument("--unit-id", type=int)
     found_city.add_argument("--city-name", default="")
     found_city.add_argument("--wait", default=5.0, type=float)
 
     move_unit = subparsers.add_parser("move-unit")
-    move_unit.add_argument("name")
     move_unit.add_argument("unit_id", type=int)
     move_unit.add_argument("--target-tile", type=int)
     move_unit.add_argument("--direction", type=int)
@@ -111,7 +104,6 @@ def main() -> None:
     move_unit.add_argument("--wait", default=5.0, type=float)
 
     unit_activity = subparsers.add_parser("unit-activity")
-    unit_activity.add_argument("name")
     unit_activity.add_argument("unit_id", type=int)
     unit_activity.add_argument("activity")
     unit_activity.add_argument("--target")
@@ -123,38 +115,32 @@ def main() -> None:
     )
 
     set_city_production = subparsers.add_parser("set-city-production")
-    set_city_production.add_argument("name")
     set_city_production.add_argument("city_id", type=int)
     set_city_production.add_argument("target")
     set_city_production.add_argument("--kind", default="unit")
     set_city_production.add_argument("--wait", default=1.0, type=float)
 
     set_rates = subparsers.add_parser("set-rates")
-    set_rates.add_argument("name")
     set_rates.add_argument("--tax", required=True, type=int)
     set_rates.add_argument("--luxury", required=True, type=int)
     set_rates.add_argument("--science", required=True, type=int)
     set_rates.add_argument("--wait", default=1.0, type=float)
 
     set_research = subparsers.add_parser("set-research")
-    set_research.add_argument("name")
     set_research.add_argument("tech")
     set_research.add_argument("--wait", default=1.0, type=float)
 
     set_tech_goal = subparsers.add_parser("set-tech-goal")
-    set_tech_goal.add_argument("name")
     set_tech_goal.add_argument("tech")
     set_tech_goal.add_argument("--wait", default=1.0, type=float)
 
     query_actions = subparsers.add_parser("query-actions")
-    query_actions.add_argument("name")
     query_actions.add_argument("unit_id", type=int)
     query_actions.add_argument("--target-tile", type=int)
     query_actions.add_argument("--dx", default=0, type=int)
     query_actions.add_argument("--dy", default=0, type=int)
 
     do_action = subparsers.add_parser("do-action")
-    do_action.add_argument("name")
     do_action.add_argument("unit_id", type=int)
     do_action.add_argument("action")
     do_action.add_argument("--target-id", required=True, type=int)
@@ -162,18 +148,15 @@ def main() -> None:
     do_action.add_argument("--action-name", default="")
     do_action.add_argument("--wait", default=1.0, type=float)
 
-    packet = subparsers.add_parser("packet")
-    packet.add_argument("name")
-    packet.add_argument("json_packet")
-
     args = parser.parse_args()
 
-    if args.command == "state":
-        result = request("GET", f"{args.base_url}/state")
+    result: Any
+    if args.command == "whoami":
+        result = {"player": player, "control_url": base_url}
     elif args.command == "ruleset":
-        result = request("GET", f"{args.base_url}/ruleset")
+        result = request("GET", f"{base_url}/ruleset")
     elif args.command == "production-targets":
-        url = f"{args.base_url}/players/{args.name}/production-targets"
+        url = f"{base_url}/players/{quoted(player)}/production-targets"
         if args.city_id is not None:
             url += f"?city_id={args.city_id}"
         result = request("GET", url)
@@ -181,71 +164,44 @@ def main() -> None:
             print(format_production_targets(result, show_all=args.all))
             return
     elif args.command == "brief":
-        if args.name:
-            result = request("GET", f"{args.base_url}/players/{args.name}/brief")
-        else:
-            result = request("GET", f"{args.base_url}/brief")
+        result = request("GET", f"{base_url}/players/{quoted(player)}/brief")
         if not args.json:
             print(format_brief(result))
             return
-    elif args.command == "player":
-        result = request("GET", f"{args.base_url}/players/{args.name}")
-    elif args.command == "player-packet-audit":
-        result = request("GET", f"{args.base_url}/players/{args.name}/player-packet-audit")
+    elif args.command == "state":
+        result = request("GET", f"{base_url}/players/{quoted(player)}")
     elif args.command == "messages":
         result = request(
             "GET",
-            f"{args.base_url}/players/{args.name}/messages?"
+            f"{base_url}/players/{quoted(player)}/messages?"
             f"{urllib.parse.urlencode({'limit': args.limit})}",
         )
     elif args.command == "local-view":
-        query = {
-            "radius": args.radius,
-        }
-        if args.unit_id is not None:
-            query["unit_id"] = args.unit_id
-        if args.city_id is not None:
-            query["city_id"] = args.city_id
-        if args.tile_id is not None:
-            query["tile_id"] = args.tile_id
-        result = request(
-            "GET",
-            f"{args.base_url}/players/{args.name}/local-view?"
-            f"{urllib.parse.urlencode(query)}",
-        )
+        result = get_view(base_url, player, "local-view", args)
     elif args.command == "ascii-view":
-        query = {
-            "radius": args.radius,
-        }
-        if args.unit_id is not None:
-            query["unit_id"] = args.unit_id
-        if args.city_id is not None:
-            query["city_id"] = args.city_id
-        if args.tile_id is not None:
-            query["tile_id"] = args.tile_id
-        result = request(
-            "GET",
-            f"{args.base_url}/players/{args.name}/ascii-view?"
-            f"{urllib.parse.urlencode(query)}",
-        )
+        result = get_view(base_url, player, "ascii-view", args)
         if args.text:
             print(result["text"])
             return
     elif args.command == "valid-moves":
         result = request(
             "GET",
-            f"{args.base_url}/players/{args.name}/valid-moves?"
+            f"{base_url}/players/{quoted(player)}/valid-moves?"
             f"{urllib.parse.urlencode({'unit_id': args.unit_id})}",
         )
         if not args.json:
             print(format_valid_moves(result))
             return
     elif args.command == "ready":
-        result = request("POST", f"{args.base_url}/players/{args.name}/ready", {})
+        result = request(
+            "POST",
+            f"{base_url}/players/{quoted(player)}/ready",
+            {"is_ready": not args.not_ready},
+        )
     elif args.command == "say":
         result = request(
             "POST",
-            f"{args.base_url}/players/{args.name}/say",
+            f"{base_url}/players/{quoted(player)}/say",
             {"message": args.message},
         )
     elif args.command == "private-intent":
@@ -254,9 +210,11 @@ def main() -> None:
             body["turn"] = args.turn
         result = request(
             "POST",
-            f"{args.base_url}/players/{args.name}/private-intent",
+            f"{base_url}/players/{quoted(player)}/private-intent",
             body,
         )
+    elif args.command == "narrative":
+        result = append_narrative(player, args.entry)
     elif args.command == "phase-done":
         body: dict[str, Any] = {}
         if args.turn is not None:
@@ -264,13 +222,13 @@ def main() -> None:
         if args.intent is not None:
             body["intent"] = args.intent
         body["wait"] = args.wait
-        result = request("POST", f"{args.base_url}/players/{args.name}/phase-done", body)
+        result = request("POST", f"{base_url}/players/{quoted(player)}/phase-done", body)
     elif args.command == "found-city":
         body = {"city_name": args.city_name}
         if args.unit_id is not None:
             body["unit_id"] = args.unit_id
         body["wait"] = args.wait
-        result = request("POST", f"{args.base_url}/players/{args.name}/found-city", body)
+        result = request("POST", f"{base_url}/players/{quoted(player)}/found-city", body)
     elif args.command == "move-unit":
         body = {
             "unit_id": args.unit_id,
@@ -282,7 +240,7 @@ def main() -> None:
             body["target_tile"] = args.target_tile
         if args.direction is not None:
             body["direction"] = args.direction
-        result = request("POST", f"{args.base_url}/players/{args.name}/move-unit", body)
+        result = request("POST", f"{base_url}/players/{quoted(player)}/move-unit", body)
     elif args.command == "unit-activity":
         body = {
             "unit_id": args.unit_id,
@@ -291,71 +249,87 @@ def main() -> None:
         }
         if args.target is not None:
             body["target"] = args.target
-        result = request("POST", f"{args.base_url}/players/{args.name}/unit-activity", body)
+        result = request("POST", f"{base_url}/players/{quoted(player)}/unit-activity", body)
         if not args.json:
             print(format_unit_activity_result(result))
             return
     elif args.command == "set-city-production":
-        body = {
-            "city_id": args.city_id,
-            "target": args.target,
-            "kind": args.kind,
-            "wait": args.wait,
-        }
         result = request(
             "POST",
-            f"{args.base_url}/players/{args.name}/set-city-production",
-            body,
+            f"{base_url}/players/{quoted(player)}/set-city-production",
+            {
+                "city_id": args.city_id,
+                "target": args.target,
+                "kind": args.kind,
+                "wait": args.wait,
+            },
         )
     elif args.command == "set-rates":
-        body = {
-            "tax": args.tax,
-            "luxury": args.luxury,
-            "science": args.science,
-            "wait": args.wait,
-        }
-        result = request("POST", f"{args.base_url}/players/{args.name}/set-rates", body)
-    elif args.command == "set-research":
-        body = {
-            "tech": args.tech,
-            "wait": args.wait,
-        }
-        result = request("POST", f"{args.base_url}/players/{args.name}/set-research", body)
-    elif args.command == "set-tech-goal":
-        body = {
-            "tech": args.tech,
-            "wait": args.wait,
-        }
-        result = request("POST", f"{args.base_url}/players/{args.name}/set-tech-goal", body)
-    elif args.command == "query-actions":
-        body = {
-            "unit_id": args.unit_id,
-            "dx": args.dx,
-            "dy": args.dy,
-        }
-        if args.target_tile is not None:
-            body["target_tile"] = args.target_tile
-        result = request("POST", f"{args.base_url}/players/{args.name}/query-actions", body)
-    elif args.command == "do-action":
-        body = {
-            "unit_id": args.unit_id,
-            "target_id": args.target_id,
-            "action": args.action,
-            "sub_target": args.sub_target,
-            "name": args.action_name,
-            "wait": args.wait,
-        }
-        result = request("POST", f"{args.base_url}/players/{args.name}/do-action", body)
-    elif args.command == "packet":
         result = request(
             "POST",
-            f"{args.base_url}/players/{args.name}/packet",
-            {"packet": json.loads(args.json_packet)},
+            f"{base_url}/players/{quoted(player)}/set-rates",
+            {
+                "tax": args.tax,
+                "luxury": args.luxury,
+                "science": args.science,
+                "wait": args.wait,
+            },
+        )
+    elif args.command == "set-research":
+        result = request(
+            "POST",
+            f"{base_url}/players/{quoted(player)}/set-research",
+            {"tech": args.tech, "wait": args.wait},
+        )
+    elif args.command == "set-tech-goal":
+        result = request(
+            "POST",
+            f"{base_url}/players/{quoted(player)}/set-tech-goal",
+            {"tech": args.tech, "wait": args.wait},
+        )
+    elif args.command == "query-actions":
+        body = {"unit_id": args.unit_id, "dx": args.dx, "dy": args.dy}
+        if args.target_tile is not None:
+            body["target_tile"] = args.target_tile
+        result = request("POST", f"{base_url}/players/{quoted(player)}/query-actions", body)
+    elif args.command == "do-action":
+        result = request(
+            "POST",
+            f"{base_url}/players/{quoted(player)}/do-action",
+            {
+                "unit_id": args.unit_id,
+                "target_id": args.target_id,
+                "action": args.action,
+                "sub_target": args.sub_target,
+                "name": args.action_name,
+                "wait": args.wait,
+            },
         )
     else:
         raise AssertionError(args.command)
 
     finish_result(result)
+
+
+def append_narrative(player: str, entry: str) -> dict[str, Any]:
+    workspace = ROOT / "players" / player
+    workspace.mkdir(parents=True, exist_ok=True)
+    path = workspace / "narrative.md"
+    text = entry.strip()
+    if not text:
+        raise SystemExit("narrative entry cannot be empty")
+    if not text.startswith("#"):
+        stamp = datetime.now().isoformat(timespec="seconds")
+        text = f"## {stamp}\n\n{text}"
+    payload = text.rstrip() + "\n\n"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(payload)
+    return {
+        "ok": True,
+        "player": player,
+        "path": str(path),
+        "bytes_appended": len(payload.encode("utf-8")),
+    }
 
 
 def finish_result(result: Any) -> None:
@@ -366,15 +340,6 @@ def finish_result(result: Any) -> None:
 
 
 def format_brief(result: dict[str, Any]) -> str:
-    if "players" in result:
-        sections = []
-        for name, player in sorted((result.get("players") or {}).items()):
-            sections.append(format_player_brief(player, fallback_name=name))
-        return "\n\n".join(sections)
-    return format_player_brief(result)
-
-
-def format_player_brief(result: dict[str, Any], fallback_name: str | None = None) -> str:
     phase = result.get("phase") or {}
     economy = result.get("economy") or {}
     research = result.get("research") or {}
@@ -382,9 +347,8 @@ def format_player_brief(result: dict[str, Any], fallback_name: str | None = None
     active = phase.get("agent_is_active_phase")
     lines = [
         (
-            f"{result.get('name') or fallback_name} turn {result.get('turn')} "
-            f"year {result.get('year')} active_phase={active} "
-            f"phase={phase.get('mode_name')}"
+            f"{result.get('name')} turn {result.get('turn')} year {result.get('year')} "
+            f"active_phase={active} phase={phase.get('mode_name')}"
         )
     ]
     if active is False:
@@ -400,13 +364,12 @@ def format_player_brief(result: dict[str, Any], fallback_name: str | None = None
     if target_summary:
         lines.append(
             "Key production targets: "
-            f"{target_summary}. Full exact list: production-targets <player>"
+            f"{target_summary}. Full exact list: bin/game production-targets"
         )
     lines.append(
         "Economy: "
         f"gold={economy.get('gold')} tax={economy.get('tax')} "
-        f"science={economy.get('science')} luxury={economy.get('luxury')} "
-        f"score={economy.get('score')} culture={economy.get('culture')}"
+        f"science={economy.get('science')} luxury={economy.get('luxury')}"
     )
     lines.append("Player status: " + format_player_status(result.get("player_status") or {}))
     researching = research.get("researching_info") or {}
@@ -449,7 +412,7 @@ def format_player_brief(result: dict[str, Any], fallback_name: str | None = None
     lines.append(f"Other units: {len(inactive)}")
     for unit in sorted(inactive, key=lambda item: int(item.get("id", 0))):
         lines.append("  " + format_brief_unit(unit))
-    lines.append("Inspect units with: valid-moves <player> <unit_id> or ascii-view <player> --unit-id <unit_id> --text")
+    lines.append("Inspect units with: bin/game valid-moves <unit_id> or bin/game ascii-view --unit-id <unit_id> --text")
     return "\n".join(lines)
 
 
@@ -563,7 +526,7 @@ def format_production_targets(result: dict[str, Any], *, show_all: bool = False)
     lines.append(
         "Full list: "
         f"{counts.get('unit')} unit targets and {counts.get('building')} building targets. "
-        "Run `production-targets <player> --all` to print them."
+        "Run `bin/game production-targets --all` to print them."
     )
     if not show_all:
         return "\n".join(lines)
@@ -781,6 +744,31 @@ def clean_label(value: Any) -> Any:
     return value
 
 
+def add_view_args(parser: argparse.ArgumentParser, *, default_radius: int) -> None:
+    parser.add_argument("--unit-id", type=int)
+    parser.add_argument("--city-id", type=int)
+    parser.add_argument("--tile-id", type=int)
+    parser.add_argument("--radius", default=default_radius, type=int)
+
+
+def get_view(base_url: str, player: str, endpoint: str, args: argparse.Namespace) -> Any:
+    query = {"radius": args.radius}
+    if args.unit_id is not None:
+        query["unit_id"] = args.unit_id
+    if args.city_id is not None:
+        query["city_id"] = args.city_id
+    if args.tile_id is not None:
+        query["tile_id"] = args.tile_id
+    return request(
+        "GET",
+        f"{base_url}/players/{quoted(player)}/{endpoint}?{urllib.parse.urlencode(query)}",
+    )
+
+
+def quoted(text: str) -> str:
+    return urllib.parse.quote(text, safe="")
+
+
 def request(method: str, url: str, body: dict[str, Any] | None = None) -> Any:
     data = None
     headers = {}
@@ -789,7 +777,7 @@ def request(method: str, url: str, body: dict[str, Any] | None = None) -> Any:
         headers["content-type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with urllib.request.urlopen(req, timeout=15) as response:
             return json.loads(response.read().decode())
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode()
@@ -798,6 +786,10 @@ def request(method: str, url: str, body: dict[str, Any] | None = None) -> Any:
         except json.JSONDecodeError:
             payload = {"error": detail or exc.reason}
         json.dump(payload, sys.stderr, indent=2, sort_keys=True)
+        print(file=sys.stderr)
+        raise SystemExit(1) from exc
+    except urllib.error.URLError as exc:
+        json.dump({"error": str(exc)}, sys.stderr, indent=2, sort_keys=True)
         print(file=sys.stderr)
         raise SystemExit(1) from exc
 

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Civ 6 Agent Bridge State",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "game", "player", "units", "cities", "visible_plots"],
+  "properties": {
+    "schema": {
+      "const": "civ6-agent-state-v0"
+    },
+    "game": {
+      "type": "object",
+      "required": ["turn"],
+      "properties": {
+        "turn": {"type": ["integer", "null"]},
+        "local_player": {"type": ["integer", "null"]},
+        "local_observer": {"type": ["integer", "null"]}
+      }
+    },
+    "player": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"type": ["integer", "null"]},
+        "name": {"type": ["string", "null"]},
+        "leader_type": {"type": ["string", "null"]},
+        "civilization_type": {"type": ["string", "null"]}
+      }
+    },
+    "units": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "cities": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "visible_plots": {
+      "type": "array",
+      "items": {"type": "object"}
+    }
+  }
+}

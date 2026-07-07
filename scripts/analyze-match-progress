@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import urllib.request
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from freeciv_agent.codex_turn_runner import validate_tool_use  # noqa: E402
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Summarize Freeciv Codex match progress.")
+    parser.add_argument("--control-url", default="http://127.0.0.1:8787")
+    parser.add_argument("--last", type=int, default=24)
+    parser.add_argument("--transcripts", type=int, default=120)
+    parser.add_argument("--players", nargs="*", default=["AgentA", "AgentB", "AgentC", "AgentD"])
+    args = parser.parse_args()
+
+    print("Freeciv match progress diagnostic")
+    print()
+    print_live_state(args.control_url, args.players)
+    print()
+    print_recent_turns(args.last)
+    print()
+    print_transcript_health(args.players, args.transcripts)
+
+
+def print_live_state(control_url: str, players: list[str]) -> None:
+    print("Live state")
+    try:
+        brief = fetch_json(f"{control_url.rstrip('/')}/brief")
+    except Exception as exc:  # noqa: BLE001 - diagnostic should keep going.
+        print(f"  unavailable: {exc}")
+        return
+    for player in players:
+        info = (brief.get("players") or {}).get(player) or {}
+        phase = info.get("phase") or {}
+        economy = info.get("economy") or {}
+        research = info.get("research") or {}
+        cities = info.get("cities") or []
+        units = info.get("units") or []
+        unit_counts = Counter(unit_name(unit) for unit in units)
+        movers = [
+            unit for unit in units
+            if isinstance(unit.get("movesleft"), (int, float)) and unit["movesleft"] > 0
+        ]
+        city_bits = []
+        for city in cities:
+            production = city.get("production") or {}
+            city_bits.append(
+                f"{city.get('name')} size={city.get('size')} "
+                f"producing={production.get('command_target') or production.get('name')}"
+            )
+        print(
+            f"  {player}: turn={info.get('turn')} "
+            f"active={phase.get('agent_is_active_phase')} "
+            f"gold={economy.get('gold')} "
+            f"research={research.get('researching_name') or research.get('researching')} "
+            f"cities={len(cities)} units={dict(sorted(unit_counts.items()))} "
+            f"units_with_moves={len(movers)}"
+        )
+        if city_bits:
+            print("    cities: " + "; ".join(city_bits))
+
+
+def print_recent_turns(last: int) -> None:
+    print(f"Recent turn results (last {last})")
+    paths = sorted((ROOT / "runtime" / "turns").glob("*-turn-result.json"))[-last:]
+    if not paths:
+        print("  none")
+        return
+    per_player: dict[str, int] = defaultdict(int)
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            print(f"  {path.name}: invalid JSON")
+            continue
+        player = str(payload.get("player"))
+        per_player[player] += 1
+        errors = payload.get("errors") or []
+        summary = " ".join(str(payload.get("turn_summary") or "").split())[:140]
+        print(
+            f"  {path.name}: {player} turn={payload.get('turn')} "
+            f"phase_done={payload.get('phase_done')} "
+            f"actions={len(payload.get('actions_taken') or [])} "
+            f"errors={len(errors)} {summary}"
+        )
+    print("  counts: " + ", ".join(f"{p}={n}" for p, n in sorted(per_player.items())))
+
+
+def print_transcript_health(players: list[str], limit: int) -> None:
+    print(f"Transcript health (last {limit})")
+    bad = []
+    checked = 0
+    paths = sorted((ROOT / "runtime" / "turns").glob("*-codex-exec-transcript.json"))[-limit:]
+    for path in paths:
+        try:
+            transcript = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            bad.append((path.name, "invalid transcript JSON"))
+            continue
+        stdout = transcript.get("stdout") or ""
+        player = player_from_filename(path.name, players)
+        workspace = ROOT / "players" / player if player else ROOT
+        interface = "mcp" if '"type":"mcp_tool_call"' in stdout or '"type": "mcp_tool_call"' in stdout else "cli"
+        checked += 1
+        try:
+            validate_tool_use(
+                stdout,
+                interface=interface,
+                workspace=workspace,
+                narrative_log=False,
+                mcp_artifact_mode="file-only",
+            )
+        except SystemExit as exc:
+            reason = str(exc).splitlines()[1] if len(str(exc).splitlines()) > 1 else str(exc)
+            bad.append((path.name, reason.removeprefix("- ")))
+    print(f"  checked={checked} suspect={len(bad)}")
+    for name, reason in bad[-12:]:
+        print(f"  suspect: {name}: {reason}")
+
+
+def fetch_json(url: str) -> dict[str, Any]:
+    with urllib.request.urlopen(url, timeout=10) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"expected object from {url}")
+    return payload
+
+
+def unit_name(unit: dict[str, Any]) -> str:
+    return str(unit.get("type_rule_name") or unit.get("type_name") or unit.get("type"))
+
+
+def player_from_filename(name: str, players: list[str]) -> str | None:
+    for player in players:
+        if f"-{player}-" in name:
+            return player
+    return None
+
+
+if __name__ == "__main__":
+    main()

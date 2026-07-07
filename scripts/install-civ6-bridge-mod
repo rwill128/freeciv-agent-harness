@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SOURCE_DIR="${REPO_ROOT}/civ6_mods/Civ6AgentBridge"
+TARGET_BASE="${CIV6_MODS_DIR:-}"
+INSTALL_ALL="${INSTALL_ALL:-1}"
+
+candidate_dirs=(
+  "${HOME}/Library/Application Support/Sid Meier's Civilization VI/Firaxis Games/Sid Meier's Civilization VI/Mods"
+  "${HOME}/Library/Application Support/Sid Meier's Civilization VI/Mods"
+  "${HOME}/Documents/Aspyr/Sid Meier's Civilization VI/Mods"
+  "${HOME}/Documents/My Games/Sid Meier's Civilization VI/Mods"
+)
+
+usage() {
+  cat <<EOF
+Usage: $0 [target-mods-dir]
+
+Installs the local Civ6AgentBridge mod into a Civ 6 Mods directory.
+
+Override target with:
+  CIV6_MODS_DIR=/path/to/Mods $0
+  $0 /path/to/Mods
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -gt 0 ]]; then
+  TARGET_BASE="$1"
+fi
+
+if [[ -z "${TARGET_BASE}" && "${INSTALL_ALL}" != "1" ]]; then
+  for candidate in "${candidate_dirs[@]}"; do
+    if [[ -d "${candidate}" ]]; then
+      TARGET_BASE="${candidate}"
+      break
+    fi
+  done
+fi
+
+if [[ -z "${TARGET_BASE}" && "${INSTALL_ALL}" != "1" ]]; then
+  echo "Could not find a Civ 6 Mods directory yet. Civ 6 may not be installed or launched once." >&2
+  echo "Tried:" >&2
+  printf '  %s\n' "${candidate_dirs[@]}" >&2
+  echo "Run again with CIV6_MODS_DIR=/path/to/Mods after install." >&2
+  exit 1
+fi
+
+if [[ -n "${TARGET_BASE}" ]]; then
+  target_dirs=("${TARGET_BASE/#\~/${HOME}}")
+else
+  target_dirs=("${candidate_dirs[@]}")
+fi
+
+for target_base in "${target_dirs[@]}"; do
+  target_dir="${target_base}/Civ6AgentBridge"
+  mkdir -p "${target_base}"
+  rm -rf "${target_dir}"
+  cp -R "${SOURCE_DIR}" "${target_dir}"
+  echo "Installed Civ6AgentBridge to: ${target_dir}"
+done
+echo "Run scripts/civ6-bridge status to confirm Civ 6 has scanned and enabled it."

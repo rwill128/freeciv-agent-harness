@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+FREECIV_PORT="${FREECIV_PORT:-5560}"
+SERVER_SCREEN="${SERVER_SCREEN:-freeciv-agent-server-${FREECIV_PORT}}"
+PLAYERS="${PLAYERS:-AgentA AgentB}"
+PLAYER_NATIONS="${PLAYER_NATIONS:-american english german french}"
+PLAYER_LEADERS="${PLAYER_LEADERS:-${PLAYERS}}"
+RUN_DIR="${RUN_DIR:-${REPO_ROOT}/runtime/run}"
+
+mkdir -p "${RUN_DIR}"
+
+server_console() {
+  local command="$1"
+  screen -S "${SERVER_SCREEN}" -p 0 -X stuff "${command}"$'\015'
+}
+
+hardcopy() {
+  local path="$1"
+  screen -S "${SERVER_SCREEN}" -p 0 -X hardcopy "${path}"
+}
+
+wait_for_players() {
+  local deadline=$((SECONDS + 30))
+  local hardcopy_path="${RUN_DIR}/freeciv-screen-set-player-nations-wait.txt"
+  while (( SECONDS < deadline )); do
+    server_console "list players"
+    sleep 0.5
+    hardcopy "${hardcopy_path}"
+    local missing=0
+    for player in ${PLAYERS}; do
+      if ! grep -F "user ${player}" "${hardcopy_path}" >/dev/null 2>&1 \
+        && ! grep -F "${player}" "${hardcopy_path}" >/dev/null 2>&1; then
+        missing=1
+        break
+      fi
+    done
+    if [[ "${missing}" == "0" ]]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "Timed out waiting for players to appear before assigning nations: ${PLAYERS}" >&2
+  tail -n 120 "${hardcopy_path}" >&2 2>/dev/null || true
+  return 1
+}
+
+sanitize_leader() {
+  local raw="$1"
+  local clean
+  clean="$(printf '%s' "${raw}" | tr -cd 'A-Za-z0-9_-')"
+  if [[ -z "${clean}" ]]; then
+    clean="Agent"
+  fi
+  printf '%s\n' "${clean}"
+}
+
+cd "${REPO_ROOT}"
+
+read -r -a nations <<<"${PLAYER_NATIONS}"
+read -r -a leaders <<<"${PLAYER_LEADERS}"
+
+if [[ "${#nations[@]}" == "0" ]]; then
+  echo "PLAYER_NATIONS must contain at least one nation rule name" >&2
+  exit 1
+fi
+
+wait_for_players
+
+index=0
+for player in ${PLAYERS}; do
+  nation="${nations[$((index % ${#nations[@]}))]}"
+  leader="${leaders[$((index % ${#leaders[@]}))]:-${player}}"
+  leader="$(sanitize_leader "${leader}")"
+  server_console "playernation ${player} ${nation} 1 ${leader}"
+  index=$((index + 1))
+  sleep 0.25
+done
+
+server_console "list players"
+sleep 1
+hardcopy "${RUN_DIR}/freeciv-screen-set-player-nations.txt"
+tail -n 120 "${RUN_DIR}/freeciv-screen-set-player-nations.txt"

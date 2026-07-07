@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+FREECIV_PORT="${FREECIV_PORT:-5560}"
+FREECIV_HOST="${FREECIV_HOST:-127.0.0.1}"
+CONTROL_URL="${CONTROL_URL:-http://127.0.0.1:8787}"
+PLAYERS="${PLAYERS:-${PLAYER_A:-AgentA} ${PLAYER_B:-AgentB}}"
+VIEWER_SUFFIX="${VIEWER_SUFFIX:-View}"
+VIEWER_MODE="${VIEWER_MODE:-player}"
+VIEWER_SCREEN_PREFIX="${VIEWER_SCREEN_PREFIX:-freeciv-viewer}"
+GTK_BIN="${GTK_BIN:-/opt/homebrew/bin/freeciv-gtk4}"
+SOUND_PLUGIN="${SOUND_PLUGIN:-none}"
+RUNTIME_DIR="${RUNTIME_DIR:-${REPO_ROOT}/runtime}"
+LOG_DIR="${RUNTIME_DIR}/logs"
+RUN_DIR="${RUNTIME_DIR}/run"
+SERVER_SCREEN="${SERVER_SCREEN:-freeciv-agent-server-${FREECIV_PORT}}"
+FREECIV_LOG="${LOG_DIR}/freeciv-server.log"
+FREECIV_GTK_DEBUG="${FREECIV_GTK_DEBUG:-${GTK_DEBUG:-n}}"
+
+mkdir -p "${LOG_DIR}" "${RUN_DIR}"
+
+detect_freeciv_log() {
+  ps ax -o command= | awk -v port="${FREECIV_PORT}" '
+    /freeciv-server/ && index($0, "--port " port) {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "--log" && (i + 1) <= NF) {
+          print $(i + 1)
+          exit
+        }
+      }
+    }
+  '
+}
+
+if [[ ! -f "${FREECIV_LOG}" ]]; then
+  detected_log="$(detect_freeciv_log)"
+  if [[ -n "${detected_log}" && -f "${detected_log}" ]]; then
+    FREECIV_LOG="${detected_log}"
+  fi
+fi
+
+server_console() {
+  local command="$1"
+  screen -S "${SERVER_SCREEN}" -p 0 -X stuff "${command}"$'\015'
+}
+
+leader_name() {
+  local player="$1"
+  local name
+  name="$(
+    python3 - "$CONTROL_URL" "$player" 2>/dev/null <<'PY' || true
+import json
+import sys
+import urllib.request
+
+base = sys.argv[1].rstrip("/")
+player = sys.argv[2]
+with urllib.request.urlopen(f"{base}/players/{player}", timeout=2) as response:
+    payload = json.loads(response.read().decode())
+info = payload.get("player_info", {})
+name = info.get("name") or payload.get("name")
+if name:
+    print(name)
+PY
+  )"
+  if [[ -n "${name}" ]]; then
+    printf '%s\n' "${name}"
+    return 0
+  fi
+
+  name="$(
+    python3 - "$FREECIV_LOG" "$player" <<'PY' || true
+import re
+import sys
+from pathlib import Path
+
+log_path = Path(sys.argv[1])
+player = re.escape(sys.argv[2])
+if not log_path.exists():
+    raise SystemExit(1)
+text = log_path.read_text(encoding="utf-8", errors="replace")
+
+matches = re.findall(
+    rf"Lost connection: {player} from .*? \\(player ([^)]+)\\)",
+    text,
+)
+if matches:
+    print(matches[-1])
+    raise SystemExit(0)
+
+connections: list[str] = []
+leaders: list[str] = []
+for line in text.splitlines():
+    if "[T001" in line:
+        break
+    match = re.search(r"Connection request from (Agent[A-Z]) from", line)
+    if match:
+        connections.append(match.group(1))
+        continue
+    match = re.search(r"announce_player\\(\\).*: (.*?) rules the ", line)
+    if match:
+        leaders.append(match.group(1))
+
+mapping = dict(zip(connections, leaders, strict=False))
+if sys.argv[2] in mapping:
+    print(mapping[sys.argv[2]])
+PY
+  )"
+  if [[ -n "${name}" ]]; then
+    printf '%s\n' "${name}"
+    return 0
+  fi
+
+  server_console "list players"
+  sleep 1
+  local hardcopy="${RUN_DIR}/freeciv-screen-${player}.txt"
+  screen -S "${SERVER_SCREEN}" -p 0 -X hardcopy "${hardcopy}"
+  name="$(
+    LC_ALL=C awk -v user="$player" '
+      index($0, ", user " user) {
+        sub(/[[:space:]]*\[#.*/, "", $0)
+        print
+        found = 1
+        exit
+      }
+      END { if (!found) exit 1 }
+    ' "${hardcopy}" 2>/dev/null || true
+  )"
+  if [[ -n "${name}" ]]; then
+    printf '%s\n' "${name}"
+    return 0
+  fi
+}
+
+wait_for_connection() {
+  local viewer="$1"
+  local start_line="$2"
+  local deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    if tail -n +"${start_line}" "${FREECIV_LOG}" 2>/dev/null \
+      | grep -F "${viewer} has connected from" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "Timed out waiting for viewer connection: ${viewer}" >&2
+  return 1
+}
+
+start_viewer() {
+  local viewer="$1"
+  local log_file="${LOG_DIR}/${viewer}-gtk.log"
+  local freeciv_log="${LOG_DIR}/${viewer}-freeciv.log"
+  local screen_name="${VIEWER_SCREEN_PREFIX}-${viewer}"
+  stop_viewer "${viewer}"
+  rm -f "${log_file}" "${freeciv_log}"
+  screen -dmS "${screen_name}" bash -lc '
+    set -euo pipefail
+    cd "$1"
+    shift
+    exec env -u GTK_DEBUG "$@"
+  ' _ "${REPO_ROOT}" \
+    "$GTK_BIN" -d "$FREECIV_GTK_DEBUG" -P "$SOUND_PLUGIN" -l "$freeciv_log" -a -s "$FREECIV_HOST" -p "$FREECIV_PORT" -n "$viewer" \
+    >"${log_file}" 2>&1
+  echo "${screen_name}" >"${RUN_DIR}/${viewer}.screen"
+}
+
+stop_viewer() {
+  local viewer="$1"
+  local pid_file="${RUN_DIR}/${viewer}.pid"
+  local screen_file="${RUN_DIR}/${viewer}.screen"
+  local screen_name="${VIEWER_SCREEN_PREFIX}-${viewer}"
+  local pids=""
+  if [[ -f "${screen_file}" ]]; then
+    screen_name="$(cat "${screen_file}" 2>/dev/null || printf '%s' "${screen_name}")"
+  fi
+  screen -S "${screen_name}" -X quit >/dev/null 2>&1 || true
+  if [[ -f "${pid_file}" ]]; then
+    pids="$(cat "${pid_file}" 2>/dev/null || true)"
+  fi
+  pids="${pids} $(pgrep -f "${GTK_BIN}.*-n ${viewer}" 2>/dev/null || true)"
+  for pid in ${pids}; do
+    [[ -n "${pid}" ]] || continue
+    [[ "${pid}" != "$$" && "${pid}" != "${BASHPID:-$$}" && "${pid}" != "${PPID}" ]] || continue
+    kill "${pid}" >/dev/null 2>&1 || true
+  done
+  sleep 0.5
+  for pid in ${pids}; do
+    [[ -n "${pid}" ]] || continue
+    [[ "${pid}" != "$$" && "${pid}" != "${BASHPID:-$$}" && "${pid}" != "${PPID}" ]] || continue
+    kill -0 "${pid}" >/dev/null 2>&1 || continue
+    kill -KILL "${pid}" >/dev/null 2>&1 || true
+  done
+  rm -f "${pid_file}" "${screen_file}"
+}
+
+attach_viewer() {
+  local viewer="$1"
+  local leader="$2"
+  local escaped_leader="${leader//\"/\\\"}"
+  server_console "observe ${viewer} \"${escaped_leader}\""
+}
+
+assert_viewer_alive() {
+  local viewer="$1"
+  local pid_file="${RUN_DIR}/${viewer}.pid"
+  local pids
+  pids="$(pgrep -f "${GTK_BIN}.*-n ${viewer}" 2>/dev/null || true)"
+  if [[ -z "${pids}" ]]; then
+    echo "Viewer process exited before it could observe the game: ${viewer}" >&2
+    echo "Recent GTK stdout/stderr:" >&2
+    tail -n 80 "${LOG_DIR}/${viewer}-gtk.log" >&2 2>/dev/null || true
+    echo "Recent Freeciv client log:" >&2
+    tail -n 120 "${LOG_DIR}/${viewer}-freeciv.log" >&2 2>/dev/null || true
+    return 1
+  fi
+}
+
+cd "${REPO_ROOT}"
+
+for player in ${PLAYERS}; do
+  if [[ "${VIEWER_MODE}" == "player" ]]; then
+    viewer="${player}"
+    leader=""
+  elif [[ "${VIEWER_MODE}" == "observer" ]]; then
+    viewer="${player}${VIEWER_SUFFIX}"
+    leader="$(leader_name "${player}")"
+    if [[ -z "${leader}" ]]; then
+      echo "Could not determine leader name for ${player}" >&2
+      exit 1
+    fi
+  else
+    echo "Unknown VIEWER_MODE=${VIEWER_MODE}; expected player or observer" >&2
+    exit 1
+  fi
+  start_line=$(( $(wc -l < "${FREECIV_LOG}") + 1 ))
+  start_viewer "${viewer}"
+  wait_for_connection "${viewer}" "${start_line}"
+  if [[ "${VIEWER_MODE}" == "observer" ]]; then
+    attach_viewer "${viewer}" "${leader}"
+  fi
+  sleep 2
+  assert_viewer_alive "${viewer}"
+done
+
+server_console "list connections"
+sleep 1
+tail -n 80 "${FREECIV_LOG}"
