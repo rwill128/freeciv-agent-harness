@@ -59,6 +59,7 @@ def main() -> None:
     parser.add_argument("--allow-model-switch", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    load_dotenv(ROOT / ".env")
 
     workspace = ROOT / "players" / args.player
     if not workspace.is_dir():
@@ -137,6 +138,8 @@ def main() -> None:
         api_tools.append(final_result_tool(schema))
         runner = ResponsesRunner(
             api_key=api_key,
+            organization=os.environ.get("OPENAI_ORG_ID")
+            or os.environ.get("OPENAI_ORGANIZATION"),
             model=args.model,
             reasoning_effort=args.reasoning_effort,
             max_output_tokens=args.max_output_tokens,
@@ -405,6 +408,7 @@ class ResponsesRunner:
         self,
         *,
         api_key: str,
+        organization: str | None,
         model: str,
         reasoning_effort: str | None,
         max_output_tokens: int,
@@ -412,6 +416,7 @@ class ResponsesRunner:
         tools: list[dict[str, Any]],
     ) -> None:
         self.api_key = api_key
+        self.organization = organization
         self.model = model
         self.reasoning_effort = reasoning_effort
         self.max_output_tokens = max_output_tokens
@@ -430,13 +435,16 @@ class ResponsesRunner:
         if self.reasoning_effort:
             payload["reasoning"] = {"effort": self.reasoning_effort}
         data = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.organization:
+            headers["OpenAI-Organization"] = self.organization
         request = urllib.request.Request(
             OPENAI_RESPONSES_URL,
             data=data,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             method="POST",
         )
         try:
@@ -465,6 +473,20 @@ def openai_tools_from_mcp(mcp_tools: list[dict[str, Any]]) -> list[dict[str, Any
             }
         )
     return tools
+
+
+def load_dotenv(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def final_result_tool(schema: dict[str, Any]) -> dict[str, Any]:
