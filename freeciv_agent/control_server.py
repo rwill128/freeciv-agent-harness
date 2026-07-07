@@ -2291,15 +2291,27 @@ class ManagedAgent:
                 )
                 return candidate_possible, candidate_actions
             except Exception as exc:
+                fallback_actions = self._fallback_found_city_actions(candidate, str(exc))
                 action_checks.append(
                     {
                         "unit_id": candidate_id,
                         "target_tile": candidate_tile,
                         "unit": PlayerState._brief_unit(self.state._enrich_unit(candidate)),
                         "error": str(exc),
+                        "fallback_action_probability": (
+                            self._action_probability(fallback_actions, 27)
+                            if fallback_actions is not None
+                            else None
+                        ),
+                        "fallback_reason": (
+                            "action query timed out, but this is a decoded Settlers unit; "
+                            "the harness will send Found City and verify by observation"
+                            if fallback_actions is not None
+                            else None
+                        ),
                     }
                 )
-                return False, None
+                return fallback_actions is not None, fallback_actions
 
         def legal_found_city_units(skip_unit_ids: set[int] | None = None) -> list[dict[str, Any]]:
             legal_units: list[dict[str, Any]] = []
@@ -2538,6 +2550,48 @@ class ManagedAgent:
         }
         self._audit_command("found-city", response)
         return response
+
+    def _fallback_found_city_actions(
+        self,
+        unit: dict[str, Any],
+        query_error: str,
+    ) -> dict[str, Any] | None:
+        if not self._is_city_founding_unit(unit):
+            return None
+        probabilities = [{"min": 0, "max": 0} for _ in range(28)]
+        probabilities[27] = {
+            "min": 200,
+            "max": 200,
+            "source": "decoded_unit_type_fallback",
+            "query_error": query_error,
+        }
+        return {
+            "actor_unit_id": int(unit["id"]),
+            "target_tile_id": int(unit["tile"]),
+            "action_probabilities": probabilities,
+            "fallback": {
+                "source": "decoded_unit_type",
+                "unit_type": self.state._enrich_unit(unit).get("type_rule_name")
+                or self.state._enrich_unit(unit).get("type_name"),
+                "query_error": query_error,
+                "authority": (
+                    "Freeciv action query timed out; the command is sent because "
+                    "the ruleset identifies this unit as Settlers, and the result "
+                    "is still judged by observed city creation."
+                ),
+            },
+        }
+
+    def _is_city_founding_unit(self, unit: dict[str, Any]) -> bool:
+        enriched = self.state._enrich_unit(unit)
+        type_info = enriched.get("type_info") or {}
+        unit_type = (
+            enriched.get("type_rule_name")
+            or enriched.get("type_name")
+            or type_info.get("rule_name")
+            or type_info.get("name")
+        )
+        return str(unit_type).lower() == "settlers"
 
     def _resolve_found_city_name(self, requested_name: str) -> tuple[str, dict[str, Any]]:
         requested_name = str(requested_name or "")

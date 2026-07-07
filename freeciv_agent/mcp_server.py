@@ -594,7 +594,7 @@ def build_tools(interface_version: str = "v1") -> dict[str, Tool]:
             ),
             input_schema=object_schema(
                 {
-                    "unit_id": int_schema("Optional owned unit id to try; omit unless targeting a specific unit."),
+                    "unit_id": int_schema("Optional owned unit id to try; omit unless targeting a specific unit.", minimum=1),
                     "city_name": string_schema("City name.", default=""),
                     "wait": number_schema("Seconds to wait for observation.", default=5.0),
                 },

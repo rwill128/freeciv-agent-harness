@@ -52,7 +52,7 @@ def main() -> None:
     parser.add_argument("--victory-mode", default="balanced")
     parser.add_argument("--narrative-log", action="store_true")
     parser.add_argument("--public-turn-message", action="store_true")
-    parser.add_argument("--max-tool-iterations", default=16, type=int)
+    parser.add_argument("--max-tool-iterations", default=24, type=int)
     parser.add_argument("--max-output-tokens", default=4096, type=int)
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
     parser.add_argument("--reset-session", action="store_true")
@@ -252,6 +252,11 @@ Suggested turn flow:
    public in-game message summarizing your turn stance or intent.
 7. Call `phase_done` with an `intent` string describing what you tried to do and why.
 8. Finish by calling `{FINAL_TOOL_NAME}` with the final turn result JSON.
+
+Do not repeat the same inspection tool with the same arguments unless the
+previous action changed the relevant state. You do not need to spend every unit
+move in a smoke-test turn; once you have made useful progress, send the public
+message if required, call `phase_done`, then call `{FINAL_TOOL_NAME}`.
 
 For `unit_activity`, read `result.estimate` and `retry_policy`. If the result is
 `already_active` or `sent_pending`, do not repeat the same activity order during
@@ -562,6 +567,20 @@ def run_turn_loop(
                         "final": True,
                     }
                 )
+                tool_outputs.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call["call_id"],
+                        "output": json.dumps(
+                            {
+                                "ok": True,
+                                "accepted": True,
+                                "message": "turn result recorded",
+                            },
+                            sort_keys=True,
+                        ),
+                    }
+                )
                 continue
             mcp_result = mcp.call_tool(name, arguments)
             output_text = mcp_result_to_text(mcp_result)
@@ -588,6 +607,18 @@ def run_turn_loop(
         if final_payload is not None:
             if not last_response_id:
                 raise RuntimeError("final response did not include a response id")
+            last_response_id = close_final_function_call(
+                runner=runner,
+                input_data=tool_outputs,
+                previous_response_id=last_response_id,
+                transcript=transcript,
+            )
+            transcript["turn_result"] = final_payload
+            transcript["last_response_id"] = last_response_id
+            transcript_path.write_text(
+                json.dumps(transcript, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
             return {
                 "turn_result": final_payload,
                 "last_response_id": last_response_id,
@@ -596,12 +627,89 @@ def run_turn_loop(
             }
         if not tool_outputs:
             raise RuntimeError("model made only non-final calls with no tool outputs")
+        remaining_iterations = max_tool_iterations - iteration
+        if remaining_iterations <= 4:
+            tool_outputs.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"You have only {remaining_iterations} tool-call rounds left. "
+                        "Stop optional inspections. If public-turn-message mode is enabled "
+                        "and you have not sent chat, call say now. Then call phase_done and "
+                        f"finish with {FINAL_TOOL_NAME}."
+                    ),
+                }
+            )
         input_data = tool_outputs
 
     raise RuntimeError(
         f"model exceeded max tool iterations ({max_tool_iterations}) without "
         f"calling {FINAL_TOOL_NAME}"
     )
+
+
+def close_final_function_call(
+    *,
+    runner: ResponsesRunner,
+    input_data: list[dict[str, Any]],
+    previous_response_id: str,
+    transcript: dict[str, Any],
+) -> str:
+    """Acknowledge submit_turn_result so the saved response id can be resumed."""
+    last_response_id = previous_response_id
+    pending_outputs = input_data
+    for ack_iteration in range(1, 4):
+        response = runner.create(
+            input_data=pending_outputs,
+            previous_response_id=last_response_id,
+        )
+        last_response_id = str(response.get("id") or "")
+        usage = normalize_usage(response.get("usage") or {})
+        add_usage(transcript["usage"], usage)
+        transcript["responses"].append(
+            {
+                "iteration": f"final_ack_{ack_iteration}",
+                "id": last_response_id,
+                "status": response.get("status"),
+                "usage": usage,
+                "output": response.get("output"),
+            }
+        )
+        function_calls = extract_function_calls(response)
+        if not function_calls:
+            return last_response_id
+
+        pending_outputs = []
+        for call in function_calls:
+            name = call["name"]
+            transcript["tool_calls"].append(
+                {
+                    "iteration": f"final_ack_{ack_iteration}",
+                    "name": name,
+                    "arguments": parse_arguments(call["arguments"], name),
+                    "result": {
+                        "ignored": True,
+                        "reason": "turn_result_already_submitted",
+                    },
+                    "final": name == FINAL_TOOL_NAME,
+                }
+            )
+            pending_outputs.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": call["call_id"],
+                    "output": json.dumps(
+                        {
+                            "ok": False,
+                            "ignored": True,
+                            "error": "turn_result_already_submitted",
+                        },
+                        sort_keys=True,
+                    ),
+                }
+            )
+
+    raise RuntimeError("model kept making tool calls after submit_turn_result")
 
 
 def extract_function_calls(response: dict[str, Any]) -> list[dict[str, Any]]:

@@ -67,7 +67,7 @@ def main() -> None:
     )
     parser.add_argument("--mcp-artifact-modes", nargs="*", default=[], metavar="PLAYER=MODE")
     parser.add_argument("--mcp-artifact-preview-chars", default=800, type=int)
-    parser.add_argument("--max-tool-iterations", default=16, type=int)
+    parser.add_argument("--max-tool-iterations", default=24, type=int)
     parser.add_argument("--max-output-tokens", default=4096, type=int)
     parser.add_argument("--no-auto-ready", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
