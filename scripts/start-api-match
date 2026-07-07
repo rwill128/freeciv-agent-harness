@@ -23,6 +23,8 @@ PUBLIC_TURN_MESSAGE="${PUBLIC_TURN_MESSAGE:-0}"
 VICTORY_MODES="${VICTORY_MODES:-}"
 MAX_TOOL_ITERATIONS="${MAX_TOOL_ITERATIONS:-24}"
 MAX_OUTPUT_TOKENS="${MAX_OUTPUT_TOKENS:-4096}"
+API_SESSION_MODE="${API_SESSION_MODE:-rolling-summary}"
+API_MEMORY_TURNS="${API_MEMORY_TURNS:-8}"
 SCREEN_NAME="${SCREEN_NAME:-freeciv-api-match}"
 LOG_FILE="${LOG_FILE:-${REPO_ROOT}/runtime/logs/api-match-runner.log}"
 PID_FILE="${PID_FILE:-${REPO_ROOT}/runtime/run/api-match-runner.pid}"
@@ -51,6 +53,8 @@ Environment overrides:
   MCP_ARTIFACT_PREVIEW_CHARS=${MCP_ARTIFACT_PREVIEW_CHARS}
   MAX_TOOL_ITERATIONS=${MAX_TOOL_ITERATIONS}
   MAX_OUTPUT_TOKENS=${MAX_OUTPUT_TOKENS}
+  API_SESSION_MODE=${API_SESSION_MODE}
+  API_MEMORY_TURNS=${API_MEMORY_TURNS}
   NARRATIVE_LOG=${NARRATIVE_LOG}
   NARRATIVE_PLAYERS=${NARRATIVE_PLAYERS}
   PUBLIC_TURN_MESSAGE=${PUBLIC_TURN_MESSAGE}
@@ -116,6 +120,8 @@ args=(
   --mcp-artifact-preview-chars "${MCP_ARTIFACT_PREVIEW_CHARS}"
   --max-tool-iterations "${MAX_TOOL_ITERATIONS}"
   --max-output-tokens "${MAX_OUTPUT_TOKENS}"
+  --session-mode "${API_SESSION_MODE}"
+  --memory-turns "${API_MEMORY_TURNS}"
   --clear-stop-file
   --players
 )
@@ -198,5 +204,5 @@ if [[ ! -s "${PID_FILE}" ]]; then
   exit 1
 fi
 
-echo "API match loop started screen=${SCREEN_NAME} pid=$(cat "${PID_FILE}") model=${MODEL} reasoning_effort=${REASONING_EFFORT} players=${PLAYERS} mcp_versions=${MCP_VERSIONS} mcp_artifact_mode=${MCP_ARTIFACT_MODE} mcp_artifact_modes=${MCP_ARTIFACT_MODES} narrative_log=${NARRATIVE_LOG} narrative_players=${NARRATIVE_PLAYERS} public_turn_message=${PUBLIC_TURN_MESSAGE} reset_narrative=${RESET_NARRATIVE} reset_mcp_artifacts=${RESET_MCP_ARTIFACTS} victory_modes=${VICTORY_MODES}"
+echo "API match loop started screen=${SCREEN_NAME} pid=$(cat "${PID_FILE}") model=${MODEL} reasoning_effort=${REASONING_EFFORT} session_mode=${API_SESSION_MODE} memory_turns=${API_MEMORY_TURNS} players=${PLAYERS} mcp_versions=${MCP_VERSIONS} mcp_artifact_mode=${MCP_ARTIFACT_MODE} mcp_artifact_modes=${MCP_ARTIFACT_MODES} narrative_log=${NARRATIVE_LOG} narrative_players=${NARRATIVE_PLAYERS} public_turn_message=${PUBLIC_TURN_MESSAGE} reset_narrative=${RESET_NARRATIVE} reset_mcp_artifacts=${RESET_MCP_ARTIFACTS} victory_modes=${VICTORY_MODES}"
 echo "Log: ${LOG_FILE}"

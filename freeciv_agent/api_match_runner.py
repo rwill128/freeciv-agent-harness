@@ -69,6 +69,12 @@ def main() -> None:
     parser.add_argument("--mcp-artifact-preview-chars", default=800, type=int)
     parser.add_argument("--max-tool-iterations", default=24, type=int)
     parser.add_argument("--max-output-tokens", default=4096, type=int)
+    parser.add_argument(
+        "--session-mode",
+        choices=["persistent", "turn-fresh", "rolling-summary"],
+        default="rolling-summary",
+    )
+    parser.add_argument("--memory-turns", default=8, type=int)
     parser.add_argument("--no-auto-ready", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -190,6 +196,8 @@ def main() -> None:
                 victory_mode=victory_modes.get(player, "balanced"),
                 max_tool_iterations=args.max_tool_iterations,
                 max_output_tokens=args.max_output_tokens,
+                session_mode=args.session_mode,
+                memory_turns=args.memory_turns,
                 dry_run=args.dry_run,
                 retries=args.turn_retries,
                 retry_sleep=args.retry_sleep,
@@ -221,6 +229,8 @@ def run_turn_with_retries(
     victory_mode: str,
     max_tool_iterations: int,
     max_output_tokens: int,
+    session_mode: str,
+    memory_turns: int,
     dry_run: bool,
     retries: int,
     retry_sleep: float,
@@ -267,6 +277,10 @@ def run_turn_with_retries(
             str(max_tool_iterations),
             "--max-output-tokens",
             str(max_output_tokens),
+            "--session-mode",
+            session_mode,
+            "--memory-turns",
+            str(memory_turns),
         ]
         if narrative_log:
             command.append("--narrative-log")
@@ -300,6 +314,8 @@ def run_turn_with_retries(
                 "narrative_log": narrative_log,
                 "public_turn_message": public_turn_message,
                 "victory_mode": victory_mode,
+                "session_mode": session_mode,
+                "memory_turns": memory_turns,
                 "returncode": 0,
                 "attempts": attempts,
                 "stdout": result.stdout,
@@ -319,6 +335,8 @@ def run_turn_with_retries(
         "narrative_log": narrative_log,
         "public_turn_message": public_turn_message,
         "victory_mode": victory_mode,
+        "session_mode": session_mode,
+        "memory_turns": memory_turns,
         "returncode": last["returncode"],
         "attempts": attempts,
         "stdout": last["stdout"],
@@ -345,6 +363,7 @@ def reset_api_player_state(
     for player in players:
         workspace = ROOT / "players" / player
         (workspace / ".api-agent-session.json").unlink(missing_ok=True)
+        (workspace / ".api-agent-memory.json").unlink(missing_ok=True)
         if reset_narrative:
             (workspace / "narrative.md").unlink(missing_ok=True)
         if reset_mcp_artifacts:

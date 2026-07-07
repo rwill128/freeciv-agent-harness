@@ -17,5 +17,6 @@ build/
 runtime/
 players/*/.codex-session.json
 players/*/.api-agent-session.json
+players/*/.api-agent-memory.json
 players/*/mcp-artifacts/
 players/*/narrative.md

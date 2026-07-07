@@ -59,6 +59,17 @@ def main() -> None:
     parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
     parser.add_argument("--reset-session", action="store_true")
     parser.add_argument("--allow-model-switch", action="store_true")
+    parser.add_argument(
+        "--session-mode",
+        choices=["persistent", "turn-fresh", "rolling-summary"],
+        default="rolling-summary",
+        help=(
+            "Cross-turn context strategy. persistent resumes the full Responses "
+            "thread; turn-fresh starts each turn with only static instructions; "
+            "rolling-summary starts fresh but includes compact saved turn memory."
+        ),
+    )
+    parser.add_argument("--memory-turns", default=8, type=int)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     load_dotenv(ROOT / ".env")
@@ -68,13 +79,24 @@ def main() -> None:
         raise SystemExit(f"missing player workspace: {workspace}")
 
     session_path = workspace / ".api-agent-session.json"
+    memory_path = workspace / ".api-agent-memory.json"
     if args.reset_session:
         session_path.unlink(missing_ok=True)
-    session_payload = load_session_payload(session_path)
-    previous_response_id = response_id_from_payload(session_payload, session_path)
+        memory_path.unlink(missing_ok=True)
+    session_payload = (
+        load_session_payload(session_path)
+        if args.session_mode == "persistent"
+        else {}
+    )
+    previous_response_id = (
+        response_id_from_payload(session_payload, session_path)
+        if args.session_mode == "persistent"
+        else None
+    )
     stored_model = session_payload.get("model")
     if (
-        previous_response_id
+        args.session_mode == "persistent"
+        and previous_response_id
         and isinstance(stored_model, str)
         and stored_model != args.model
         and not args.allow_model_switch
@@ -86,6 +108,11 @@ def main() -> None:
         )
 
     schema = load_json_schema(Path(args.schema))
+    memory_payload = (
+        load_api_memory(memory_path)
+        if args.session_mode == "rolling-summary"
+        else {}
+    )
     prompt = build_api_prompt(
         args.player,
         args.control_url,
@@ -94,6 +121,8 @@ def main() -> None:
         mcp_artifact_mode=args.mcp_artifact_mode,
         narrative_log=args.narrative_log,
         public_turn_message=args.public_turn_message,
+        session_mode=args.session_mode,
+        memory_payload=memory_payload,
     )
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = ROOT / "runtime" / "turns"
@@ -110,6 +139,12 @@ def main() -> None:
                     "player": args.player,
                     "model": args.model,
                     "previous_response_id": previous_response_id,
+                    "session_mode": args.session_mode,
+                    "memory_file": (
+                        str(memory_path)
+                        if args.session_mode == "rolling-summary"
+                        else None
+                    ),
                     "mcp_version": args.mcp_version,
                     "mcp_artifact_mode": args.mcp_artifact_mode,
                     "tools": "loaded at runtime from scripts/freeciv-mcp",
@@ -170,22 +205,43 @@ def main() -> None:
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    save_session_id(
-        session_path,
-        {
-            "response_id": result["last_response_id"],
-            "player": args.player,
-            "model": args.model,
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-        },
-    )
+    if args.session_mode == "persistent":
+        save_session_id(
+            session_path,
+            {
+                "response_id": result["last_response_id"],
+                "player": args.player,
+                "model": args.model,
+                "session_mode": args.session_mode,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+    else:
+        session_path.unlink(missing_ok=True)
+    if args.session_mode == "rolling-summary":
+        update_api_memory(
+            memory_path,
+            memory_payload,
+            turn_result=payload,
+            max_turns=args.memory_turns,
+        )
     json.dump(
         {
             "ok": True,
             "player": args.player,
             "model": args.model,
             "result_file": str(output_path),
-            "session_file": str(session_path),
+            "session_file": (
+                str(session_path)
+                if args.session_mode == "persistent"
+                else None
+            ),
+            "memory_file": (
+                str(memory_path)
+                if args.session_mode == "rolling-summary"
+                else None
+            ),
+            "session_mode": args.session_mode,
             "response_id": result["last_response_id"],
             "transcript_file": str(transcript_path),
             "usage": result["usage"],
@@ -207,6 +263,8 @@ def build_api_prompt(
     mcp_artifact_mode: str,
     narrative_log: bool,
     public_turn_message: bool,
+    session_mode: str,
+    memory_payload: dict[str, Any],
 ) -> str:
     victory_section = victory_mode_prompt(victory_mode)
     narrative_section = narrative_log_prompt(narrative_log, interface="mcp")
@@ -215,6 +273,7 @@ def build_api_prompt(
         interface="mcp",
     )
     artifact_section = mcp_artifact_prompt(mcp_version, mcp_artifact_mode)
+    session_section = api_session_context_prompt(session_mode, memory_payload)
     # Reuse the Codex MCP prompt body where possible, but remove Codex-only
     # tool_search/shell language. Keeping the turn flow aligned makes Codex vs
     # API comparisons cleaner.
@@ -227,6 +286,7 @@ already scoped to {player}; do not try to inspect or control any other player.
 Do not write memory/plan/notes files.
 {narrative_section}
 {public_message_section}
+{session_section}
 
 Hard opening rule: if `brief` or any other state view shows you have zero
 cities and an owned Settlers unit, you must call `found_city` before any
@@ -293,6 +353,119 @@ def load_json_schema(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise SystemExit(f"invalid JSON schema {path}: expected object")
     return payload
+
+
+def load_api_memory(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"invalid API memory file {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit(f"invalid API memory file {path}: expected object")
+    turns = payload.get("recent_turns")
+    if turns is not None and not isinstance(turns, list):
+        raise SystemExit(f"invalid API memory file {path}: recent_turns must be a list")
+    return payload
+
+
+def update_api_memory(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    turn_result: dict[str, Any],
+    max_turns: int,
+) -> None:
+    max_turns = max(0, max_turns)
+    recent_turns = [
+        turn for turn in payload.get("recent_turns", [])
+        if isinstance(turn, dict)
+    ]
+    recent_turns.append(
+        {
+            "turn": turn_result.get("turn"),
+            "turn_summary": turn_result.get("turn_summary", ""),
+            "private_intent": turn_result.get("private_intent", ""),
+            "public_message": turn_result.get("public_message", ""),
+            "actions_taken": [
+                str(action)
+                for action in turn_result.get("actions_taken", [])
+                if isinstance(action, (str, int, float, bool))
+            ][:16],
+            "errors": [
+                str(error)
+                for error in turn_result.get("errors", [])
+                if isinstance(error, (str, int, float, bool))
+            ][:8],
+        }
+    )
+    if max_turns:
+        recent_turns = recent_turns[-max_turns:]
+    else:
+        recent_turns = []
+    path.write_text(
+        json.dumps(
+            {
+                "player": turn_result.get("player"),
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+                "recent_turns": recent_turns,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def api_session_context_prompt(
+    session_mode: str,
+    memory_payload: dict[str, Any],
+) -> str:
+    if session_mode == "persistent":
+        return (
+            "Session mode: persistent. You may have prior turn context in this "
+            "Responses thread, but current MCP state is authoritative."
+        )
+    if session_mode == "turn-fresh":
+        return (
+            "Session mode: turn-fresh. You do not have prior-turn conversation "
+            "context; rely on current MCP state and the fixed scenario instructions."
+        )
+    recent_turns = [
+        turn for turn in memory_payload.get("recent_turns", [])
+        if isinstance(turn, dict)
+    ]
+    if not recent_turns:
+        memory_text = "- No prior turn summaries are available for this player."
+    else:
+        lines: list[str] = []
+        for turn in recent_turns[-8:]:
+            actions = turn.get("actions_taken")
+            action_text = ""
+            if isinstance(actions, list) and actions:
+                action_text = "; actions: " + "; ".join(
+                    str(action) for action in actions[:6]
+                )
+            errors = turn.get("errors")
+            error_text = ""
+            if isinstance(errors, list) and errors:
+                error_text = "; errors: " + "; ".join(str(error) for error in errors[:3])
+            lines.append(
+                "- Turn "
+                f"{turn.get('turn')}: {turn.get('turn_summary') or '(no summary)'}"
+                f"; intent: {turn.get('private_intent') or '(none)'}"
+                f"{action_text}{error_text}"
+            )
+        memory_text = "\n".join(lines)
+    return (
+        "Session mode: rolling-summary. This turn starts a fresh Responses "
+        "conversation, but the compact prior-turn memory below is provided. "
+        "Treat current MCP state as authoritative when it conflicts with memory.\n"
+        "Prior-turn memory:\n"
+        f"{memory_text}"
+    )
 
 
 def response_id_from_payload(payload: dict[str, Any], path: Path) -> str | None:
