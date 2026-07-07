@@ -1088,6 +1088,7 @@ def format_turn_dashboard(result: dict[str, Any]) -> str:
         f"Phase: {phase.get('mode_name') or 'unknown'}",
         "",
         "## Open Unit Work",
+        "These units still have moves or actions available. Handle each useful unit before phase_done, or explicitly leave it unused for a strategic reason.",
     ]
     if actionable:
         for unit in actionable:
@@ -1130,6 +1131,7 @@ def format_units_ready(result: dict[str, Any]) -> str:
         "",
         f"Turn: {result.get('turn')} ({result.get('year')})",
         f"Units with moves remaining: {len(actionable)}",
+        "Handle each strategically useful ready unit before phase_done, or explicitly leave it unused for a reason.",
     ]
     if actionable:
         lines.append("")

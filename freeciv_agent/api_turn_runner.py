@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -26,6 +27,7 @@ from .codex_turn_runner import (
 ROOT = Path(__file__).resolve().parents[1]
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 FINAL_TOOL_NAME = "submit_turn_result"
+PHASE_DONE_READY_UNIT_WARNING_THRESHOLD = 2
 
 
 def main() -> None:
@@ -156,6 +158,7 @@ def main() -> None:
         )
 
     payload = result["turn_result"]
+    normalize_api_turn_result(payload, tool_calls=result["tool_calls"])
     validate_api_turn_result(
         payload,
         args.player,
@@ -254,9 +257,13 @@ Suggested turn flow:
 8. Finish by calling `{FINAL_TOOL_NAME}` with the final turn result JSON.
 
 Do not repeat the same inspection tool with the same arguments unless the
-previous action changed the relevant state. You do not need to spend every unit
-move in a smoke-test turn; once you have made useful progress, send the public
-message if required, call `phase_done`, then call `{FINAL_TOOL_NAME}`.
+previous action changed the relevant state. This is a real match turn, not a
+minimal smoke test: prefer to act with every strategically useful unit listed
+by `turn_dashboard` or `units_ready` before ending phase. You may leave a ready
+unit unused only when moving or assigning it would be strategically harmful,
+redundant, or illegal; if so, mention that briefly in `private_intent`. Once
+you have handled the important ready units, send the public message if
+required, call `phase_done`, then call `{FINAL_TOOL_NAME}`.
 
 For `unit_activity`, read `result.estimate` and `retry_policy`. If the result is
 `already_active` or `sent_pending`, do not repeat the same activity order during
@@ -526,6 +533,7 @@ def run_turn_loop(
     input_data: Any = prompt
     last_response_id = previous_response_id
     final_payload: dict[str, Any] | None = None
+    phase_done_deferred_for_ready_units = False
 
     for iteration in range(1, max_tool_iterations + 1):
         response = runner.create(input_data=input_data, previous_response_id=last_response_id)
@@ -582,6 +590,29 @@ def run_turn_loop(
                     }
                 )
                 continue
+            if name == "phase_done" and not phase_done_deferred_for_ready_units:
+                defer_result = maybe_defer_phase_done_for_ready_units(mcp)
+                if defer_result is not None:
+                    phase_done_deferred_for_ready_units = True
+                    output_text = mcp_result_to_text(defer_result)
+                    transcript["tool_calls"].append(
+                        {
+                            "iteration": iteration,
+                            "name": name,
+                            "arguments": arguments,
+                            "result": defer_result,
+                            "final": False,
+                            "deferred": True,
+                        }
+                    )
+                    tool_outputs.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": call["call_id"],
+                            "output": output_text,
+                        }
+                    )
+                    continue
             mcp_result = mcp.call_tool(name, arguments)
             output_text = mcp_result_to_text(mcp_result)
             transcript["tool_calls"].append(
@@ -646,6 +677,40 @@ def run_turn_loop(
         f"model exceeded max tool iterations ({max_tool_iterations}) without "
         f"calling {FINAL_TOOL_NAME}"
     )
+
+
+def maybe_defer_phase_done_for_ready_units(mcp: McpClient) -> dict[str, Any] | None:
+    try:
+        ready_result = mcp.call_tool("units_ready", {})
+    except RuntimeError:
+        return None
+    ready_text = mcp_result_to_text(ready_result)
+    ready_count = parse_units_ready_count(ready_text)
+    if ready_count < PHASE_DONE_READY_UNIT_WARNING_THRESHOLD:
+        return None
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "phase_done was not executed yet because multiple owned units "
+                    f"still appear ready ({ready_count}). Act with the strategically "
+                    "useful units first. If specific ready units should intentionally "
+                    "remain unused, call phase_done again with a private intent naming "
+                    "those units and the reason.\n\n"
+                    f"{ready_text}"
+                ),
+            }
+        ],
+        "isError": True,
+    }
+
+
+def parse_units_ready_count(text: str) -> int:
+    match = re.search(r"Units with moves remaining:\s*(\d+)", text)
+    if not match:
+        return 0
+    return int(match.group(1))
 
 
 def close_final_function_call(
@@ -813,6 +878,89 @@ def validate_api_turn_result(
 
 def mcp_call_ok(result: Any) -> bool:
     return isinstance(result, dict) and result.get("isError") is not True
+
+
+def normalize_api_turn_result(
+    payload: dict[str, Any],
+    *,
+    tool_calls: list[dict[str, Any]],
+) -> None:
+    actions = payload.get("actions_taken")
+    if not isinstance(actions, list):
+        return
+    for call in tool_calls:
+        if call.get("final") or not mcp_call_ok(call.get("result")):
+            continue
+        summary = action_summary_from_call(call)
+        if summary is None or action_already_listed(summary, actions, call):
+            continue
+        actions.append(summary)
+
+
+def action_summary_from_call(call: dict[str, Any]) -> str | None:
+    name = call.get("name")
+    args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+    if name == "move_unit":
+        result_payload = mcp_result_json_payload(call.get("result"))
+        after = result_payload.get("after") if isinstance(result_payload.get("after"), dict) else {}
+        unit_id = args.get("unit_id")
+        target = after.get("tile") or result_payload.get("target_tile") or args.get("target_tile")
+        unit_name = after.get("type_rule_name") or after.get("type_name") or "unit"
+        direction = args.get("direction")
+        if target is not None:
+            return f"move_unit: {unit_name} #{unit_id} to tile {target}"
+        return f"move_unit: unit {unit_id} direction {direction}"
+    if name == "unit_activity":
+        return f"unit_activity: unit {args.get('unit_id')} {args.get('activity')}"
+    if name == "found_city":
+        city_name = args.get("city_name") or "(auto name)"
+        return f"found_city: {city_name}"
+    if name == "set_city_production":
+        return f"set_city_production: city {args.get('city_id')} -> {args.get('target')}"
+    if name == "set_research":
+        return f"set_research: {args.get('technology') or args.get('tech')}"
+    if name == "set_tech_goal":
+        return f"set_tech_goal: {args.get('technology') or args.get('tech')}"
+    if name == "set_rates":
+        return (
+            "set_rates: "
+            f"tax={args.get('tax')} science={args.get('science')} luxury={args.get('luxury')}"
+        )
+    if name == "say":
+        return f"say: {args.get('message')}"
+    if name == "narrative_append":
+        return "narrative_append: wrote turn narrative"
+    if name == "phase_done":
+        return f"phase_done: {args.get('intent')}"
+    return None
+
+
+def action_already_listed(
+    summary: str,
+    actions: list[Any],
+    call: dict[str, Any],
+) -> bool:
+    name = str(call.get("name") or "")
+    args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+    existing = [str(action) for action in actions]
+    if name == "move_unit":
+        result_payload = mcp_result_json_payload(call.get("result"))
+        after = result_payload.get("after") if isinstance(result_payload.get("after"), dict) else {}
+        unit_id = str(args.get("unit_id"))
+        target = str(after.get("tile") or result_payload.get("target_tile") or args.get("target_tile"))
+        return any("move" in action.lower() and unit_id in action and target in action for action in existing)
+    return any(name in action for action in existing) or summary in existing
+
+
+def mcp_result_json_payload(result: Any) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    text = mcp_result_to_text(result)
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def zero_usage() -> dict[str, int]:

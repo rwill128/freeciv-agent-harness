@@ -302,6 +302,12 @@ Suggested turn flow:
    public in-game message summarizing your turn stance or intent.
 7. Call `phase_done` with an `intent` string describing what you tried to do and why.
 
+This is a real match turn, not a minimal smoke test. Prefer to act with every
+strategically useful unit listed by `turn_dashboard`, `units_ready`, or `brief`
+before ending phase. You may leave a ready unit unused only when moving or
+assigning it would be strategically harmful, redundant, or illegal; if so,
+mention that briefly in the private phase-done intent.
+
 For `unit_activity`, read `result.estimate` and `retry_policy`. If the result is
 `already_active` or `sent_pending`, do not repeat the same activity order during
 this turn; inspect or act with another unit, choose a different action, or end
@@ -360,6 +366,12 @@ Suggested turn flow:
 4. Issue useful legal actions quickly.
 5. If public turn message mode is enabled, run `bin/game say "public message"` exactly once.
 6. Run `bin/game phase-done --intent "private note about what you tried to do and why"`.
+
+This is a real match turn, not a minimal smoke test. Prefer to act with every
+strategically useful unit listed by `bin/game brief` before ending phase. You
+may leave a ready unit unused only when moving or assigning it would be
+strategically harmful, redundant, or illegal; if so, mention that briefly in
+the private phase-done intent.
 
 For `bin/game unit-activity`, read the printed Result and Repeat lines. If the
 result is `already_active` or `sent_pending`, do not repeat the same activity

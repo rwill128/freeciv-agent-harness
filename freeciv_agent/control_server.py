@@ -2641,16 +2641,69 @@ class ManagedAgent:
             current_tile = unit.get("tile")
             if current_tile is None:
                 raise RuntimeError(f"{self.name} unit {unit_id} has no known tile")
+            requested_target_tile = target_tile
+            requested_relative = dx != 0 or dy != 0
             if direction is not None:
-                target_tile = self._step_tile(int(current_tile), direction)
-                if target_tile is None:
-                    raise RuntimeError(
-                        f"direction {direction} from tile {current_tile} is invalid"
+                direction_target = self._step_tile(int(current_tile), direction)
+                if direction_target is None:
+                    return self._move_unit_argument_error(
+                        unit_id=unit_id,
+                        current_tile=int(current_tile),
+                        target_tile=target_tile,
+                        direction=direction,
+                        message=f"direction {direction} from tile {current_tile} is invalid",
                     )
+                if (
+                    requested_target_tile is not None
+                    and int(requested_target_tile) != direction_target
+                ):
+                    return self._move_unit_argument_error(
+                        unit_id=unit_id,
+                        current_tile=int(current_tile),
+                        target_tile=int(requested_target_tile),
+                        direction=direction,
+                        message=(
+                            "conflicting move_unit arguments: "
+                            f"direction {direction} from tile {current_tile} resolves to "
+                            f"tile {direction_target}, but target_tile was "
+                            f"{requested_target_tile}"
+                        ),
+                    )
+                if requested_relative:
+                    relative_target = self._relative_tile(int(current_tile), dx, dy)
+                    if relative_target != direction_target:
+                        return self._move_unit_argument_error(
+                            unit_id=unit_id,
+                            current_tile=int(current_tile),
+                            target_tile=relative_target,
+                            direction=direction,
+                            message=(
+                                "conflicting move_unit arguments: "
+                                f"direction {direction} from tile {current_tile} resolves "
+                                f"to tile {direction_target}, but dx={dx}, dy={dy} "
+                                f"resolves to tile {relative_target}"
+                            ),
+                        )
+                target_tile = direction_target
             elif target_tile is None:
                 target_tile = self._relative_tile(int(current_tile), dx, dy)
                 direction = self._direction_to_target(int(current_tile), target_tile)
             else:
+                if requested_relative:
+                    relative_target = self._relative_tile(int(current_tile), dx, dy)
+                    if relative_target != target_tile:
+                        return self._move_unit_argument_error(
+                            unit_id=unit_id,
+                            current_tile=int(current_tile),
+                            target_tile=int(target_tile),
+                            direction=None,
+                            message=(
+                                "conflicting move_unit arguments: "
+                                f"target_tile was {target_tile}, but dx={dx}, dy={dy} "
+                                f"from tile {current_tile} resolves to tile "
+                                f"{relative_target}"
+                            ),
+                        )
                 direction = self._direction_to_target(int(current_tile), target_tile)
             before = self.state._enrich_unit(unit)
             actionability = self._unit_actionability_info(unit)
@@ -2760,6 +2813,41 @@ class ManagedAgent:
             "precheck_authority": "advisory only; command was still sent to Freeciv",
             "wait_seconds": wait,
             "recent_messages": recent_messages,
+        }
+        self._audit_command("move-unit", response)
+        return response
+
+    def _move_unit_argument_error(
+        self,
+        *,
+        unit_id: int,
+        current_tile: int,
+        target_tile: int | None,
+        direction: int | None,
+        message: str,
+    ) -> dict[str, Any]:
+        response = {
+            "ok": False,
+            "player": self.name,
+            "unit_id": unit_id,
+            "from_tile": current_tile,
+            "target_tile": target_tile,
+            "packet": "PACKET_UNIT_ORDERS",
+            "sent": False,
+            "direction": direction,
+            "direction_info": (
+                direction_info(direction, self.state.map_info.get("topology_id"))
+                if direction is not None
+                else None
+            ),
+            "applied": False,
+            "reached_target": False,
+            "observed_changed": False,
+            "result": "invalid_arguments",
+            "result_explanation": message,
+            "error": message,
+            "precheck_authority": "harness rejected inconsistent move_unit arguments before sending",
+            "wait_seconds": 0,
         }
         self._audit_command("move-unit", response)
         return response
