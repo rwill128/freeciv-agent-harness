@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<GameData>
+  <InGameUIAddin>
+    <Row>
+      <Name>Civ5AgentBridge</Name>
+      <FileName>Civ5AgentBridge.lua</FileName>
+    </Row>
+  </InGameUIAddin>
+</GameData>

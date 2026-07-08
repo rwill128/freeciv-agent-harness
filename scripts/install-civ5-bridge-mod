@@ -1,0 +1,63 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SOURCE_DIR="${REPO_ROOT}/civ5_mods/Civ5AgentBridge"
+DEFAULT_TARGET_BASE="${HOME}/Library/Application Support/Sid Meier's Civilization 5/MODS"
+TARGET_BASE="${CIV5_MODS_DIR:-${DEFAULT_TARGET_BASE}}"
+
+usage() {
+  cat <<EOF
+Usage: $0 [target-mods-dir]
+
+Installs the local Civ5AgentBridge mod into the Civ 5 MODS directory.
+
+Override target with:
+  CIV5_MODS_DIR=/path/to/MODS $0
+  $0 /path/to/MODS
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -gt 0 ]]; then
+  TARGET_BASE="$1"
+fi
+
+target_base="${TARGET_BASE/#\~/${HOME}}"
+target_dir="${target_base}/Civ5AgentBridge"
+mkdir -p "${target_base}"
+rm -rf "${target_dir}"
+cp -R "${SOURCE_DIR}" "${target_dir}"
+
+if command -v md5 >/dev/null 2>&1; then
+  agent_bridge_xml_md5="$(md5 -q "${target_dir}/AgentBridge.xml")"
+  bridge_lua_md5="$(md5 -q "${target_dir}/Civ5AgentBridge.lua")"
+  python3 - "${target_dir}/Civ5AgentBridge.modinfo" "${agent_bridge_xml_md5}" "${bridge_lua_md5}" <<'PY'
+from __future__ import annotations
+
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+path = Path(sys.argv[1])
+md5_by_name = {
+    "AgentBridge.xml": sys.argv[2],
+    "Civ5AgentBridge.lua": sys.argv[3],
+}
+tree = ET.parse(path)
+root = tree.getroot()
+for file_node in root.findall(".//File"):
+    name = (file_node.text or "").strip()
+    if name in md5_by_name:
+        file_node.set("md5", md5_by_name[name])
+tree.write(path, encoding="utf-8", xml_declaration=True)
+PY
+fi
+
+echo "Installed Civ5AgentBridge to: ${target_dir}"
+echo "Run scripts/civ5-bridge status, then launch Civ 5 and enable the mod."

@@ -6,9 +6,10 @@ normal GTK client stays connected as the recording view.
 Detailed protocol and MCP-design notes live in
 `docs/freeciv-agent-harness.md`.
 
-The Civ 6 adapter track is documented separately in
-`docs/civ6-agent-bridge.md`. Its first milestone is a Lua bridge mod that dumps
-active-player visible state to `Lua.log` for the local Python harness to parse.
+The Civ 5 and Civ 6 adapter tracks are documented separately in
+`docs/civ5-agent-bridge.md` and `docs/civ6-agent-bridge.md`. Their first
+milestone is a Lua bridge mod that dumps active-player visible state to
+`Lua.log` for the local Python harness to parse.
 
 ## Current Working Setup
 
@@ -348,4 +349,41 @@ parser reads the latest framed state record with:
 scripts/civ6-bridge log-paths
 scripts/civ6-bridge latest-state --pretty
 scripts/civ6-bridge brief
+```
+
+## Civ 5 Adapter Track
+
+Initial Civ 5 files:
+
+```text
+civ5_mods/Civ5AgentBridge/
+civ5_agent/
+scripts/civ5-bridge
+scripts/install-civ5-bridge-mod
+scripts/civ5-runtime
+docs/civ5-agent-bridge.md
+```
+
+The local Steam install is detected at:
+
+```text
+/Volumes/PolymarketData/SteamLibrary/steamapps/common/Sid Meier's Civilization V/Civilization V.app
+```
+
+Install the bridge mod and enable Civ 5 debug/Lua logging with:
+
+```sh
+bash scripts/civ5-runtime setup
+bash scripts/civ5-runtime status
+bash scripts/civ5-runtime launch
+```
+
+After enabling `Civ5AgentBridge` in Civ 5 Mods and starting a hotseat game, the
+bridge should write framed state records to `Lua.log`; inspect them with:
+
+```sh
+bash scripts/civ5-bridge log-paths
+bash scripts/civ5-bridge wait-state --pretty --timeout 600
+bash scripts/civ5-bridge latest-state --pretty
+bash scripts/civ5-bridge brief
 ```

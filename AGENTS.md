@@ -6,6 +6,8 @@ Read `docs/freeciv-rules-for-agents.md` before changing agent prompts,
 ruleset-facing views, or strategic game-state summaries.
 For the Civ 6 adapter track, read `docs/civ6-agent-bridge.md` before changing
 `civ6_agent/`, `civ6_mods/`, or Civ 6 bridge scripts.
+For the Civ 5 adapter track, read `docs/civ5-agent-bridge.md` before changing
+`civ5_agent/`, `civ5_mods/`, or Civ 5 bridge scripts.
 
 ## Runtime Model
 

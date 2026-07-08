@@ -1,0 +1,81 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SUPPORT_ROOT="${HOME}/Library/Application Support/Sid Meier's Civilization 5"
+CONFIG_INI="${SUPPORT_ROOT}/config.ini"
+LUA_LOG="${SUPPORT_ROOT}/Logs/Lua.log"
+
+usage() {
+  cat <<EOF
+Usage: $0 <command>
+
+Commands:
+  setup       Install the bridge mod and set debug/no-audio options.
+  launch      Open Civ 5 through Steam.
+  status      Print bridge install/log status.
+  wait-state  Wait for the bridge to emit a Lua.log state record.
+  command     Print the latest bridge command-result record.
+  log         Tail Lua.log.
+
+Typical first run:
+  $0 setup
+  $0 launch
+  $0 status
+EOF
+}
+
+set_ini_option() {
+  local key="$1"
+  local value="$2"
+  if [[ ! -f "${CONFIG_INI}" ]]; then
+    echo "Missing config.ini: ${CONFIG_INI}" >&2
+    return 1
+  fi
+  if grep -qE "^${key}[[:space:]]*=" "${CONFIG_INI}"; then
+    perl -0pi -e "s/^${key}\\s*=.*$/${key} = ${value}/mg" "${CONFIG_INI}"
+  else
+    printf '\n%s = %s\n' "${key}" "${value}" >> "${CONFIG_INI}"
+  fi
+}
+
+subcommand="${1:-}"
+case "${subcommand}" in
+  setup)
+    (cd "${REPO_ROOT}" && bash scripts/install-civ5-bridge-mod)
+    set_ini_option EnableTuner 1
+    set_ini_option EnableLuaDebugLibrary 1
+    set_ini_option MessageLog 1
+    set_ini_option "Disable Sid Sounds" 1
+    set_ini_option "Enable music" 0
+    (cd "${REPO_ROOT}" && python3 -m civ5_agent.cli status)
+    ;;
+  launch)
+    open "steam://run/8930"
+    echo "Requested Civ 5 launch through Steam app id 8930"
+    ;;
+  status)
+    (cd "${REPO_ROOT}" && python3 -m civ5_agent.cli status)
+    ;;
+  wait-state)
+    (cd "${REPO_ROOT}" && python3 -m civ5_agent.cli wait-state --pretty --timeout "${2:-300}")
+    ;;
+  command)
+    (cd "${REPO_ROOT}" && python3 -m civ5_agent.cli latest-command --pretty)
+    ;;
+  log)
+    if [[ ! -f "${LUA_LOG}" ]]; then
+      echo "Lua.log not found yet: ${LUA_LOG}" >&2
+      exit 1
+    fi
+    tail -n "${2:-120}" "${LUA_LOG}"
+    ;;
+  -h|--help|help|"")
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Mod id="35b1f59d-4c8e-4c74-95fa-2a39e1d50001" version="1">
+  <Properties>
+    <Name>Civ5AgentBridge</Name>
+    <Stability>0</Stability>
+    <Description>Development bridge for reading Civ 5 state and exposing agent command hooks.</Description>
+    <Authors>Game AI Science</Authors>
+    <SupportsSinglePlayer>1</SupportsSinglePlayer>
+    <SupportsMultiplayer>0</SupportsMultiplayer>
+    <SupportsMac>1</SupportsMac>
+    <AffectsSavedGames>1</AffectsSavedGames>
+    <MinCompatibleSaveVersion>1</MinCompatibleSaveVersion>
+    <ReloadLandmarkSystem>0</ReloadLandmarkSystem>
+    <ReloadLeaderSystem>0</ReloadLeaderSystem>
+    <ReloadUnitSystem>0</ReloadUnitSystem>
+  </Properties>
+  <Dependencies />
+  <References />
+  <Blocks />
+  <Files>
+    <File md5="">AgentBridge.xml</File>
+    <File md5="">Civ5AgentBridge.lua</File>
+  </Files>
+  <Actions>
+    <OnModActivated>
+      <UpdateDatabase>AgentBridge.xml</UpdateDatabase>
+    </OnModActivated>
+  </Actions>
+</Mod>
